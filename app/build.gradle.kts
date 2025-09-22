@@ -12,8 +12,6 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
-
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -35,7 +33,7 @@ dependencies {
 
     implementation("androidx.appcompat:appcompat:1.6.1")
     // implementation(libs.material)
-    testImplementation(libs.junit)
-    androidTestImplementation(libs.ext.junit)
-    androidTestImplementation(libs.espresso.core)
+    testImplementation("junit:junit:4.13.2")
+    // androidTestImplementation(libs.ext.junit)
+    // androidTestImplementation(libs.espresso.core)
 }
