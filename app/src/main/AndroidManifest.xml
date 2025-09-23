@@ -22,5 +22,10 @@
 
         <activity android:name=".Messages" />
 
+        <activity
+            android:name=".Chat"
+            android:exported="false"
+            android:windowSoftInputMode="stateHidden|adjustResize"/>
+
     </application>
 </manifest>

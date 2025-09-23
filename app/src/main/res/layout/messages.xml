@@ -13,14 +13,16 @@
         android:paddingEnd="12dp"
         android:background="#FFFFFF">
 
-        <!-- Left: dummy profile photo (circle) -->
-        <View
+        <!-- Left: profile photo -->
+        <ImageView
             android:id="@+id/toolbar_avatar"
             android:layout_width="36dp"
             android:layout_height="36dp"
             android:layout_centerVertical="true"
             android:layout_alignParentStart="true"
-            android:background="@drawable/circle_avatar" />
+            android:scaleType="centerCrop"
+            android:background="@drawable/circle_avatar"
+            android:contentDescription="Profile photo" />
 
         <!-- Center: title -->
         <TextView

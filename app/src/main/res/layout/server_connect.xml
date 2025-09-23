@@ -10,7 +10,6 @@
         android:orientation="vertical"
         android:padding="16dp">
 
-        <!-- Page heading -->
         <TextView
             android:id="@+id/heading"
             android:layout_width="match_parent"
@@ -20,34 +19,32 @@
             android:textStyle="bold"
             android:paddingBottom="12dp" />
 
-        <!-- IP input -->
+        <!-- IP or host:port -->
         <EditText
             android:id="@+id/input_ip"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="IP"
+            android:hint="IP or host:port"
             android:inputType="textNoSuggestions"
             android:singleLine="true"
             android:padding="8dp" />
 
-        <!-- Secret token input -->
+        <!-- Your Signal number -->
         <EditText
-            android:id="@+id/input_token"
+            android:id="@+id/input_number"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Secret token"
-            android:inputType="textPassword"
+            android:hint="Your Signal number"
+            android:inputType="phone"
             android:singleLine="true"
             android:padding="8dp"
             android:layout_marginTop="12dp" />
 
-        <!-- Connect button -->
         <Button
             android:id="@+id/btn_connect"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Connect"
             android:layout_marginTop="20dp" />
-
     </LinearLayout>
 </ScrollView>
