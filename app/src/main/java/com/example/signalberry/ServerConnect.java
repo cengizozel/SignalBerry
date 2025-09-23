@@ -1,6 +1,7 @@
 package com.example.signalberry;
 
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.EditText;
@@ -21,6 +22,11 @@ public class ServerConnect extends AppCompatActivity {
         EditText tokenField = findViewById(R.id.input_token);
         Button connectBtn = findViewById(R.id.btn_connect);
 
+        // Prefill from last run
+        SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
+        ipField.setText(prefs.getString("ip", ""));
+        tokenField.setText(prefs.getString("secret", ""));
+
         connectBtn.setOnClickListener(v -> {
             String ip = ipField.getText().toString().trim();
             String secret = tokenField.getText().toString().trim();
@@ -28,8 +34,11 @@ public class ServerConnect extends AppCompatActivity {
                 Toast.makeText(this, "Enter IP and secret", Toast.LENGTH_SHORT).show();
                 return;
             }
-            connectBtn.setEnabled(false);
 
+            // Save for next run
+            prefs.edit().putString("ip", ip).putString("secret", secret).apply();
+
+            connectBtn.setEnabled(false);
             new Thread(() -> {
                 boolean ok = verify(ip, secret);
                 runOnUiThread(() -> {
@@ -46,8 +55,7 @@ public class ServerConnect extends AppCompatActivity {
 
     private boolean verify(String ipOrHostPort, String secret) {
         try {
-            // build http://<host:port>/verify
-            String base = ipOrHostPort.startsWith("http://") || ipOrHostPort.startsWith("https://")
+            String base = (ipOrHostPort.startsWith("http://") || ipOrHostPort.startsWith("https://"))
                     ? ipOrHostPort : "http://" + ipOrHostPort;
             String urlStr = base.endsWith("/") ? base + "verify" : base + "/verify";
 
@@ -66,7 +74,6 @@ public class ServerConnect extends AppCompatActivity {
 
             int code = c.getResponseCode();
             c.disconnect();
-            // Flask returns 200 when ok, 401 when not — so HTTP 200 is enough
             return code == 200;
         } catch (Exception e) {
             return false;

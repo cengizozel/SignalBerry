@@ -1,7 +1,68 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ListView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/list_people"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:dividerHeight="1dp"
-    android:padding="8dp" />
+    android:fitsSystemWindows="true">
+
+    <!-- Top bar -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:background="#FFFFFF">
+
+        <!-- Left: dummy profile photo (circle) -->
+        <View
+            android:id="@+id/toolbar_avatar"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_centerVertical="true"
+            android:layout_alignParentStart="true"
+            android:background="@drawable/circle_avatar" />
+
+        <!-- Center: title -->
+        <TextView
+            android:id="@+id/toolbar_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Chats"
+            android:textStyle="bold"
+            android:textSize="18sp"
+            android:layout_centerInParent="true" />
+
+        <!-- Right: plus button (no action) -->
+        <ImageButton
+            android:id="@+id/toolbar_add"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:layout_centerVertical="true"
+            android:layout_alignParentEnd="true"
+            android:padding="6dp"
+            android:src="@android:drawable/ic_menu_add"
+            android:background="@android:color/transparent"
+            android:contentDescription="New message" />
+    </RelativeLayout>
+
+    <!-- Search bar -->
+    <EditText
+        android:id="@+id/search"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Search"
+        android:singleLine="true"
+        android:padding="10dp"
+        android:layout_margin="12dp"
+        android:background="@android:drawable/edit_text" />
+
+    <!-- Chat list -->
+    <ListView
+        android:id="@+id/list_people"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:dividerHeight="1dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp" />
+</LinearLayout>
