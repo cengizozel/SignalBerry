@@ -75,8 +75,8 @@ public class Chat extends AppCompatActivity {
 
         prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
 
-        String ipPref     = prefs.getString("ip", "");      // e.g. 192.168.1.24:5000 or http://...
-        String bridgePref = prefs.getString("bridge", "");  // e.g. http://192.168.1.24:9099 (optional)
+        String ipPref     = prefs.getString("ip", "");
+        String bridgePref = prefs.getString("bridge", "");
         myNumber   = prefs.getString("number", "");
         peerNumber = getIntent().getStringExtra("peer_number");
         peerUuid   = getIntent().getStringExtra("peer_uuid");
