@@ -74,6 +74,7 @@ public class ServerConnect extends AppCompatActivity {
                         prefs.edit()
                                 .putString("ip", ip)
                                 .putString("number", finalCanonical != null ? finalCanonical : numberInput)
+                                .putString("bridge", deriveBridgeBase(ip))
                                 .apply();
                         startActivity(new Intent(ServerConnect.this, Messages.class));
                     } else {
@@ -151,5 +152,16 @@ public class ServerConnect extends AppCompatActivity {
             if (ch >= '0' && ch <= '9') out.append(ch);
         }
         return out.toString();
+    }
+
+    private static String deriveBridgeBase(String ipOrBase) {
+        // normalize to host (strip scheme/port)
+        String base = ipOrBase.trim();
+        if (base.startsWith("http://"))  base = base.substring(7);
+        else if (base.startsWith("https://")) base = base.substring(8);
+        // base now like 192.168.1.24:5000 -> take host before first ':'
+        int colon = base.indexOf(':');
+        String host = (colon > 0) ? base.substring(0, colon) : base;
+        return "http://" + host + ":9099";
     }
 }

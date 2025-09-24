@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:paddingTop="0dp">
+
+    <!-- Search bar -->
+    <EditText
+        android:id="@+id/search"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Search"
+        android:singleLine="true"
+        android:padding="10dp"
+        android:layout_margin="12dp"
+        android:background="@android:drawable/edit_text" />
+
+    <!-- Contact list (only people without prior messages) -->
+    <ListView
+        android:id="@+id/list_people"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:dividerHeight="1dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp" />
+</LinearLayout>

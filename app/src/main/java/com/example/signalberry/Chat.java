@@ -7,6 +7,7 @@ import android.os.Looper;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.Toast;
+
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -34,31 +35,38 @@ import okio.ByteString;
 
 public class Chat extends AppCompatActivity {
 
-    // Expose to adapter (package-private used above)
+    // message status (shown in your adapter as 🕒/✓/✓✓)
     static final int ST_PENDING   = 0;
     static final int ST_SENT      = 1;
     static final int ST_DELIVERED = 2;
     static final int ST_READ      = 3;
 
-    private String base;
+    private String baseSignal;   // http://IP:5000  (Signal REST)
+    private String baseBridge;   // http://IP:9099  (your bridge)
     private String myNumber;
-    private String peerNumber;
-    private String peerUuid;
+    private String peerNumber;   // preferred if present
+    private String peerUuid;     // fallback
     private String peerName;
 
+    // per-chat keys
     private SharedPreferences prefs;
-    private String histKey;
+    private String histKey;      // JSON array of messages (text+images)
+    private String lastTsKey;    // last seen serverTs for bridge catch-up (bridge only)
 
-    // RecyclerView
+    // UI
     private RecyclerView recycler;
     private ChatAdapter chatAdapter;
     private final List<MessageItem> items = new ArrayList<>();
 
-    // WebSocket
+    // Signal WebSocket
     private OkHttpClient wsClient;
     private WebSocket ws;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int retrySec = 1;
+
+    // Bridge polling (text-only catch-up)
+    private static final long BRIDGE_POLL_MS = 3000L;
+    private boolean bridgePolling = false;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -67,34 +75,39 @@ public class Chat extends AppCompatActivity {
 
         prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
 
-        String host = prefs.getString("ip", "");
+        String ipPref     = prefs.getString("ip", "");      // e.g. 192.168.1.24:5000 or http://...
+        String bridgePref = prefs.getString("bridge", "");  // e.g. http://192.168.1.24:9099 (optional)
         myNumber   = prefs.getString("number", "");
         peerNumber = getIntent().getStringExtra("peer_number");
         peerUuid   = getIntent().getStringExtra("peer_uuid");
         peerName   = getIntent().getStringExtra("peer_name");
         if (peerName == null || peerName.isEmpty())
-            peerName = (notEmpty(peerNumber) ? peerNumber : notEmpty(peerUuid) ? peerUuid : "Chat");
+            peerName = notEmpty(peerNumber) ? peerNumber : notEmpty(peerUuid) ? peerUuid : "Chat";
 
-        if (!notEmpty(host) || !notEmpty(myNumber) || (!notEmpty(peerNumber) && !notEmpty(peerUuid))) {
+        if (!notEmpty(ipPref) || !notEmpty(myNumber) || (!notEmpty(peerNumber) && !notEmpty(peerUuid))) {
             Toast.makeText(this, "Missing server IP / my number / peer id", Toast.LENGTH_LONG).show();
             finish();
             return;
         }
 
-        base = normalizeBase(host);
-        histKey = "chat_hist_" + (notEmpty(peerNumber) ? digits(peerNumber) : peerUuid);
+        baseSignal = normalizeBase(ipPref);
+        baseBridge = normalizeBase(bridgePref.isEmpty() ? deriveBridgeBase(ipPref) : bridgePref);
+
+        String chatKey = notEmpty(peerNumber) ? digits(peerNumber) : (peerUuid != null ? peerUuid : "peer");
+        histKey   = "chat_hist_"    + chatKey;
+        lastTsKey = "chat_last_ts_" + chatKey;
 
         // Top bar
         ImageButton back = findViewById(R.id.btn_back);
         back.setOnClickListener(v -> finish());
         ((android.widget.TextView) findViewById(R.id.title_name)).setText(peerName);
 
-        // RecyclerView setup
+        // RecyclerView
         recycler = findViewById(R.id.chat_list);
         LinearLayoutManager lm = new LinearLayoutManager(this);
-        lm.setStackFromEnd(true); // start from bottom
+        lm.setStackFromEnd(true);
         recycler.setLayoutManager(lm);
-        chatAdapter = new ChatAdapter(items);
+        chatAdapter = new ChatAdapter(items, baseSignal); // pass Signal REST base for attachments
         recycler.setAdapter(chatAdapter);
 
         // Composer
@@ -104,56 +117,95 @@ public class Chat extends AppCompatActivity {
             String text = input.getText().toString().trim();
             if (text.isEmpty()) return;
 
-            long localId = System.currentTimeMillis();
-            addToHistory("me", text, localId, ST_PENDING, -1, true);
-            input.setText("");
+            // optimistic pending bubble
+            items.add(new MessageItem("me", text, ST_PENDING));
+            chatAdapter.notifyItemInserted(items.size() - 1);
+            recycler.scrollToPosition(items.size() - 1);
+            saveHistory();
 
+            input.setText("");
             send.setEnabled(false);
-            new Thread(() -> {
-                boolean ok = sendOnce(text);
-                runOnUiThread(() -> send.setEnabled(true));
-                if (ok) {
-                    if (markNewestMyPendingTo(ST_SENT)) runOnUiThread(this::reloadUIFromPrefs);
-                } else {
-                    runOnUiThread(() ->
-                            Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show()
-                    );
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    boolean ok = sendOnce(text);
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            send.setEnabled(true);
+                            if (ok) {
+                                if (markNewestMyPendingTo(ST_SENT)) {
+                                    chatAdapter.notifyDataSetChanged();
+                                    recycler.scrollToPosition(items.size() - 1);
+                                    saveHistory();
+                                }
+                            } else {
+                                Toast.makeText(Chat.this, "Send failed", Toast.LENGTH_SHORT).show();
+                            }
+                        }
+                    });
                 }
             }).start();
         });
 
-        // Load history
+        // Load persisted history
         loadHistory();
 
         // WebSocket client
         wsClient = new OkHttpClient.Builder()
                 .readTimeout(0, TimeUnit.MILLISECONDS)
-                .pingInterval(30, TimeUnit.SECONDS)
+                .pingInterval(25, TimeUnit.SECONDS)
                 .build();
     }
 
     @Override protected void onResume() {
         super.onResume();
         openWebSocket();
+        startBridgePolling();
+        fetchFromBridgeOnce(); // quick catch-up
     }
 
     @Override protected void onPause() {
         super.onPause();
         closeWebSocket();
+        stopBridgePolling();
     }
 
-    // --- WebSocket bits (same logic as before) ---
+    // -------------------- SEND --------------------
+    private boolean sendOnce(String text) {
+        try {
+            String url = baseSignal + "/v2/send";
+            JSONObject body = new JSONObject();
+            body.put("message", text);
+            body.put("number", myNumber);
+            JSONArray rcpts = new JSONArray();
+            if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
+            body.put("recipients", rcpts);
+            int code = httpPostJson(url, body.toString());
+            return code >= 200 && code < 300;
+        } catch (Exception e) { return false; }
+    }
+
+    // -------------------- SIGNAL WS --------------------
     private void openWebSocket() {
         if (ws != null) return;
         try {
-            String wsUrl = toWs(base) + "/v1/receive/" + URLEncoder.encode(myNumber, "UTF-8");
+            String wsUrl = toWs(baseSignal) + "/v1/receive/" + URLEncoder.encode(myNumber, "UTF-8");
             Request req = new Request.Builder().url(wsUrl).build();
             ws = wsClient.newWebSocket(req, new WebSocketListener() {
                 @Override public void onOpen(WebSocket webSocket, Response response) { retrySec = 1; }
-                @Override public void onMessage(WebSocket webSocket, String text) { handleWsPayload(text); }
-                @Override public void onMessage(WebSocket webSocket, ByteString bytes) { handleWsPayload(bytes.utf8()); }
-                @Override public void onClosed(WebSocket webSocket, int code, String reason) { ws = null; scheduleReconnect(); }
-                @Override public void onFailure(WebSocket webSocket, Throwable t, Response r) { ws = null; scheduleReconnect(); }
+
+                @Override public void onMessage(WebSocket webSocket, String text) {
+                    handleWsPayload(text);
+                }
+                @Override public void onMessage(WebSocket webSocket, ByteString bytes) {
+                    handleWsPayload(bytes.utf8());
+                }
+
+                @Override public void onClosed(WebSocket webSocket, int code, String reason) {
+                    ws = null; scheduleReconnect();
+                }
+                @Override public void onFailure(WebSocket webSocket, Throwable t, Response r) {
+                    ws = null; scheduleReconnect();
+                }
             });
         } catch (Exception e) {
             scheduleReconnect();
@@ -163,25 +215,37 @@ public class Chat extends AppCompatActivity {
         if (isFinishing() || isDestroyed()) return;
         final int delay = Math.min(retrySec, 16);
         retrySec = Math.min(retrySec * 2, 16);
-        handler.postDelayed(this::openWebSocket, delay * 1000L);
+        handler.postDelayed(new Runnable() {
+            @Override public void run() { openWebSocket(); }
+        }, delay * 1000L);
     }
     private void closeWebSocket() {
-        if (ws != null) { try { ws.close(1000, "leaving"); } catch (Exception ignored) {} ws = null; }
+        if (ws != null) { try { ws.close(1000, "bye"); } catch (Exception ignored) {} ws = null; }
         retrySec = 1;
-        handler.removeCallbacksAndMessages(null);
     }
 
     private void handleWsPayload(String payload) {
         boolean changed = false;
         try {
-            if (payload.trim().startsWith("[")) {
-                JSONArray arr = new JSONArray(payload);
-                for (int i = 0; i < arr.length(); i++) if (handleEnvelope(arr.getJSONObject(i))) changed = true;
+            String p = payload.trim();
+            if (p.startsWith("[")) {
+                JSONArray arr = new JSONArray(p);
+                for (int i = 0; i < arr.length(); i++) {
+                    if (handleEnvelope(arr.getJSONObject(i))) changed = true;
+                }
             } else {
-                if (handleEnvelope(new JSONObject(payload))) changed = true;
+                if (handleEnvelope(new JSONObject(p))) changed = true;
             }
         } catch (Exception ignored) {}
-        if (changed) runOnUiThread(this::reloadUIFromPrefs);
+        if (changed) {
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    chatAdapter.notifyDataSetChanged();
+                    if (!items.isEmpty()) recycler.scrollToPosition(items.size() - 1);
+                    saveHistory();
+                }
+            });
+        }
     }
 
     private boolean handleEnvelope(JSONObject obj) {
@@ -189,175 +253,306 @@ public class Chat extends AppCompatActivity {
         JSONObject env = obj.optJSONObject("envelope");
         if (env == null) return false;
 
-        // Incoming
         String srcNum  = env.optString("sourceNumber", env.optString("source", ""));
         String srcUuid = env.optString("sourceUuid", "");
+
+        // Incoming from this peer: text + images
         if (isFromPeer(srcNum, srcUuid)) {
             JSONObject data = env.optJSONObject("dataMessage");
             if (data != null) {
+                long ts = env.optLong("timestamp", 0);
+
+                // text
                 String text = data.optString("message", data.optString("text", "")).trim();
-                long ts = env.optLong("timestamp", System.currentTimeMillis());
-                if (!text.isEmpty()) {
-                    addToHistory("peer", text, ts, ST_DELIVERED, -1, true);
+                if (!isEmpty(text)) {
+                    items.add(new MessageItem("peer", text, ST_DELIVERED));
                     changed = true;
+                    bumpLastTs(ts);
+                }
+
+                // images
+                JSONArray atts = data.optJSONArray("attachments");
+                if (atts != null) {
+                    for (int i = 0; i < atts.length(); i++) {
+                        JSONObject a = atts.optJSONObject(i);
+                        if (a == null) continue;
+                        String cid  = a.optString("id", "");
+                        String mime = a.optString("contentType", "");
+                        if (!isEmpty(cid) && mime != null && mime.startsWith("image/")) {
+                            items.add(new MessageItem("peer", cid, mime, ST_DELIVERED, true));
+                            changed = true;
+                            bumpLastTs(ts);
+                        }
+                    }
                 }
             }
         }
 
-        // Sent echo
+        // Sync echo of our sends (sets SENT quickly)
         JSONObject sync = env.optJSONObject("syncMessage");
         if (sync != null) {
             JSONObject sent = sync.optJSONObject("sentMessage");
             if (sent != null) {
-                long serverTs = sent.optLong("timestamp", 0);
                 String destNum  = sent.optString("destinationNumber", "");
                 String destUuid = sent.optString("destinationUuid", "");
                 if (isDestThisChat(destNum, destUuid)) {
-                    boolean a = attachServerTimestampToNewestPending(serverTs);
-                    boolean b = (serverTs > 0) && upgradeStatusByServerTs(serverTs, ST_SENT);
-                    if (a || b) changed = true;
+                    String msg = sent.optString("message", "").trim();
+                    if (!isEmpty(msg)) {
+                        // match newest pending by text (best effort)
+                        markNewestPendingWithTextTo(msg, ST_SENT);
+                        changed = true;
+                    }
+                    // attachments (images) sent from other devices
+                    JSONArray atts = sent.optJSONArray("attachments");
+                    if (atts != null) {
+                        for (int i = 0; i < atts.length(); i++) {
+                            JSONObject a = atts.optJSONObject(i);
+                            if (a == null) continue;
+                            String cid  = a.optString("id", "");
+                            String mime = a.optString("contentType", "");
+                            if (!isEmpty(cid) && mime != null && mime.startsWith("image/")) {
+                                items.add(new MessageItem("me", cid, mime, ST_SENT, true));
+                                changed = true;
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Receipts
+        // Delivery / Read receipts — we don’t have serverTs on items,
+        // so upgrade the newest "me" message with status < target (reasonable heuristic).
         JSONObject receipt = env.optJSONObject("receiptMessage");
         if (receipt != null) {
             String type = receipt.optString("type", "").toUpperCase();
-            JSONArray tsArr = receipt.optJSONArray("timestamps");
-            if (tsArr != null) {
-                for (int j = 0; j < tsArr.length(); j++) {
-                    long ts = tsArr.optLong(j, 0);
-                    if (ts == 0) continue;
-                    if ("DELIVERY".equals(type))      { if (upgradeStatusByServerTs(ts, ST_DELIVERED)) changed = true; }
-                    else if ("READ".equals(type) ||
-                            "VIEWED".equals(type))   { if (upgradeStatusByServerTs(ts, ST_READ))      changed = true; }
-                }
+            if ("DELIVERY".equals(type)) {
+                if (upgradeNewestMyStatusToAtLeast(ST_DELIVERED)) changed = true;
+            } else if ("READ".equals(type) || "VIEWED".equals(type)) {
+                if (upgradeNewestMyStatusToAtLeast(ST_READ)) changed = true;
             }
         }
         return changed;
     }
 
-    // --- Send over HTTP (unchanged) ---
-    private boolean sendOnce(String text) {
-        try {
-            String url = base + "/v2/send";
-            JSONObject body = new JSONObject();
-            body.put("message", text);
-            body.put("number", myNumber);
-            JSONArray rcpts = new JSONArray();
-            if (notEmpty(peerNumber)) rcpts.put(peerNumber); else if (notEmpty(peerUuid)) rcpts.put(peerUuid);
-            body.put("recipients", rcpts);
-            int code = httpPostJson(url, body.toString());
-            return code >= 200 && code < 300;
-        } catch (Exception e) { return false; }
+    // -------------------- BRIDGE POLLING --------------------
+    private void startBridgePolling() {
+        if (bridgePolling) return;
+        bridgePolling = true;
+        handler.post(bridgePollRun);
+    }
+    private void stopBridgePolling() {
+        bridgePolling = false;
+        handler.removeCallbacks(bridgePollRun);
+    }
+    private final Runnable bridgePollRun = new Runnable() {
+        @Override public void run() {
+            if (!bridgePolling) return;
+            fetchFromBridgeOnce();
+            handler.postDelayed(this, BRIDGE_POLL_MS);
+        }
+    };
+
+    private void fetchFromBridgeOnce() {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    String peerKey = notEmpty(peerNumber) ? peerNumber : peerUuid;
+                    long after = prefs.getLong(lastTsKey, 0L);
+                    String url = baseBridge + "/messages?peer=" +
+                            URLEncoder.encode(peerKey, "UTF-8") + "&after=" + after + "&limit=500";
+                    String json = httpGet(url);
+                    JSONObject root = new JSONObject(json);
+                    JSONArray arr = root.optJSONArray("items");
+                    if (arr == null) return;
+
+                    boolean changed = false;
+                    long maxTs = after;
+
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject it = arr.getJSONObject(i);
+                        String dir = it.optString("dir", "");
+                        String text = it.optString("text", "");
+                        long   ts   = it.optLong("serverTs", 0);
+                        int    st   = it.optInt("status", ST_SENT);
+                        if (ts > maxTs) maxTs = ts;
+
+                        if (isEmpty(text)) continue; // bridge stores text only
+
+                        if ("in".equals(dir)) {
+                            // append if not already present (simple contains check)
+                            if (!alreadyHasIncomingText(text)) {
+                                items.add(new MessageItem("peer", text, Math.max(st, ST_DELIVERED)));
+                                changed = true;
+                            }
+                        } else if ("out".equals(dir)) {
+                            // try to find a matching pending/older "me" text to upgrade
+                            if (!upgradeExistingMyTextTo(text, st)) {
+                                // append (message sent on another device)
+                                items.add(new MessageItem("me", text, st));
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    if (maxTs > after) prefs.edit().putLong(lastTsKey, maxTs).apply();
+
+                    if (changed) runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            chatAdapter.notifyDataSetChanged();
+                            if (!items.isEmpty()) recycler.scrollToPosition(items.size() - 1);
+                            saveHistory();
+                        }
+                    });
+                } catch (Exception ignored) { }
+            }
+        }).start();
     }
 
-    // --- History <-> UI glue ---
+    // -------------------- helpers: item updates --------------------
+    private void bumpLastTs(long ts) {
+        if (ts <= 0) return;
+        long cur = prefs.getLong(lastTsKey, 0L);
+        if (ts > cur) prefs.edit().putLong(lastTsKey, ts).apply();
+    }
+
+    private boolean markNewestMyPendingTo(int newStatus) {
+        for (int i = items.size() - 1; i >= 0; i--) {
+            MessageItem m = items.get(i);
+            if (!"me".equals(m.from)) continue;
+            if (m.status == ST_PENDING) {
+                m.status = newStatus;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void markNewestPendingWithTextTo(String text, int newStatus) {
+        if (isEmpty(text)) return;
+        for (int i = items.size() - 1; i >= 0; i--) {
+            MessageItem m = items.get(i);
+            if (!"me".equals(m.from)) continue;
+            if (m.status == ST_PENDING && text.equals(m.text)) {
+                m.status = newStatus;
+                return;
+            }
+        }
+    }
+
+    private boolean upgradeNewestMyStatusToAtLeast(int newStatus) {
+        for (int i = items.size() - 1; i >= 0; i--) {
+            MessageItem m = items.get(i);
+            if (!"me".equals(m.from)) continue;
+            if (m.status < newStatus) {
+                m.status = newStatus;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean alreadyHasIncomingText(String text) {
+        if (isEmpty(text)) return true;
+        for (int i = items.size() - 1; i >= 0 && i >= items.size() - 50; i--) {
+            MessageItem m = items.get(i);
+            if (!"peer".equals(m.from)) continue;
+            if (m.type == MessageItem.TYPE_TEXT && text.equals(m.text)) return true;
+        }
+        return false;
+    }
+
+    private boolean upgradeExistingMyTextTo(String text, int newStatus) {
+        if (isEmpty(text)) return false;
+        for (int i = items.size() - 1; i >= 0; i--) {
+            MessageItem m = items.get(i);
+            if (!"me".equals(m.from)) continue;
+            if (m.type == MessageItem.TYPE_TEXT && text.equals(m.text)) {
+                if (newStatus > m.status) m.status = newStatus;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // -------------------- persistence --------------------
     private void loadHistory() {
         try {
             String raw = prefs.getString(histKey, "[]");
             JSONArray arr = new JSONArray(raw);
             items.clear();
             for (int i = 0; i < arr.length(); i++) {
-                JSONObject m = arr.getJSONObject(i);
-                String from = m.optString("from", "peer");
-                String text = m.optString("text", "");
-                int status  = m.optInt("status", ST_DELIVERED);
-                items.add(new MessageItem(from, text, status));
+                JSONObject o = arr.getJSONObject(i);
+                String from = o.optString("from", "peer");
+                int status  = o.optInt("status", ST_DELIVERED);
+                String type = o.optString("type", "text");
+                if ("image".equals(type)) {
+                    String cid  = o.optString("attId", "");
+                    String mime = o.optString("mime", "");
+                    items.add(new MessageItem(from, cid, mime, status, true));
+                } else {
+                    String text = o.optString("text", "");
+                    items.add(new MessageItem(from, text, status));
+                }
             }
             chatAdapter.notifyDataSetChanged();
             if (!items.isEmpty()) recycler.scrollToPosition(items.size() - 1);
         } catch (Exception ignored) { }
     }
-    private void reloadUIFromPrefs() { loadHistory(); }
 
-    private void addToHistory(String from, String text, long localTs, int status, long serverTs, boolean updateUI) {
+    private void saveHistory() {
         try {
-            String raw = prefs.getString(histKey, "[]");
-            JSONArray arr = new JSONArray(raw);
-            if (arr.length() > 400) {
-                JSONArray newer = new JSONArray();
-                for (int i = 50; i < arr.length(); i++) newer.put(arr.get(i));
-                arr = newer;
+            JSONArray arr = new JSONArray();
+            for (MessageItem m : items) {
+                JSONObject o = new JSONObject();
+                o.put("from", m.from);
+                o.put("status", m.status);
+                if (m.type == MessageItem.TYPE_IMAGE) {
+                    o.put("type", "image");
+                    o.put("attId", m.attachmentId);
+                    o.put("mime",  m.mime == null ? "" : m.mime);
+                } else {
+                    o.put("type", "text");
+                    o.put("text", m.text == null ? "" : m.text);
+                }
+                arr.put(o);
             }
-            JSONObject m = new JSONObject();
-            m.put("from", from); m.put("text", text);
-            m.put("ts", localTs); m.put("status", status); m.put("serverTs", serverTs);
-            arr.put(m);
             prefs.edit().putString(histKey, arr.toString()).apply();
-
-            if (updateUI) {
-                items.add(new MessageItem(from, text, status));
-                chatAdapter.notifyItemInserted(items.size() - 1);
-                recycler.scrollToPosition(items.size() - 1);
-            }
         } catch (Exception ignored) { }
     }
 
-    private boolean markNewestMyPendingTo(int newStatus) {
-        try {
-            String raw = prefs.getString(histKey, "[]");
-            JSONArray arr = new JSONArray(raw);
-            for (int i = arr.length() - 1; i >= 0; i--) {
-                JSONObject m = arr.getJSONObject(i);
-                if (!"me".equals(m.optString("from"))) continue;
-                if (m.optInt("status", ST_PENDING) != ST_PENDING) continue;
-                m.put("status", newStatus);
-                prefs.edit().putString(histKey, arr.toString()).apply();
-                return true;
-            }
-        } catch (Exception ignored) { }
-        return false;
+    // -------------------- utils --------------------
+    private static String normalizeBase(String base) {
+        String b = base == null ? "" : base.trim();
+        if (!b.startsWith("http://") && !b.startsWith("https://")) b = "http://" + b;
+        if (b.endsWith("/")) b = b.substring(0, b.length() - 1);
+        return b;
     }
-
-    private boolean attachServerTimestampToNewestPending(long serverTs) {
-        if (serverTs <= 0) return false;
-        try {
-            String raw = prefs.getString(histKey, "[]");
-            JSONArray arr = new JSONArray(raw);
-            for (int i = arr.length() - 1; i >= 0; i--) {
-                JSONObject m = arr.getJSONObject(i);
-                if (!"me".equals(m.optString("from"))) continue;
-                if (m.optLong("serverTs", -1) > 0) continue;
-                int st = m.optInt("status", ST_PENDING);
-                if (st != ST_PENDING && st != ST_SENT) continue;
-                m.put("serverTs", serverTs);
-                prefs.edit().putString(histKey, arr.toString()).apply();
-                return true;
-            }
-        } catch (Exception ignored) { }
-        return false;
-    }
-
-    private boolean upgradeStatusByServerTs(long serverTs, int newStatus) {
-        boolean changed = false;
-        try {
-            String raw = prefs.getString(histKey, "[]");
-            JSONArray arr = new JSONArray(raw);
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject m = arr.getJSONObject(i);
-                if (!"me".equals(m.optString("from"))) continue;
-                if (m.optLong("serverTs", -1) != serverTs) continue;
-                int cur = m.optInt("status", ST_SENT);
-                if (newStatus > cur) { m.put("status", newStatus); changed = true; }
-            }
-            if (changed) prefs.edit().putString(histKey, arr.toString()).apply();
-        } catch (Exception ignored) { }
-        return changed;
-    }
-
-    // --- HTTP helpers / matching ---
-    private static String normalizeBase(String hostPort) {
-        if ("localhost:5000".equals(hostPort) || "127.0.0.1:5000".equals(hostPort)) hostPort = "10.0.2.2:5000";
-        if (!hostPort.startsWith("http://") && !hostPort.startsWith("https://")) hostPort = "http://" + hostPort;
-        if (hostPort.endsWith("/")) hostPort = hostPort.substring(0, hostPort.length() - 1);
-        return hostPort;
+    private static String deriveBridgeBase(String ipOrBase) {
+        String base = ipOrBase.trim();
+        if (base.startsWith("http://"))  base = base.substring(7);
+        else if (base.startsWith("https://")) base = base.substring(8);
+        int c = base.indexOf(':');
+        String host = (c > 0) ? base.substring(0, c) : base;
+        return "http://" + host + ":9099";
     }
     private static String toWs(String httpBase) {
-        if (httpBase.startsWith("https://")) return "wss://" + httpBase.substring("https://".length());
-        if (httpBase.startsWith("http://"))  return "ws://"  + httpBase.substring("http://".length());
+        if (httpBase.startsWith("https://")) return "wss://" + httpBase.substring(8);
+        if (httpBase.startsWith("http://"))  return "ws://"  + httpBase.substring(7);
         return "ws://" + httpBase;
+    }
+    private static String httpGet(String urlStr) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(8000);
+        c.setRequestMethod("GET");
+        int code = c.getResponseCode();
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(
+                (code >= 400 ? c.getErrorStream() : c.getInputStream())))) {
+            StringBuilder sb = new StringBuilder();
+            String line; while ((line = br.readLine()) != null) sb.append(line);
+            String out = sb.toString();
+            return out.isEmpty() ? "{}" : out;
+        } finally { c.disconnect(); }
     }
     private static int httpPostJson(String urlStr, String json) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
@@ -371,7 +566,7 @@ public class Chat extends AppCompatActivity {
         return code;
     }
     private static boolean notEmpty(String s) { return s != null && !s.trim().isEmpty(); }
-    private static boolean digitsEq(String a, String b) { return digits(a).equals(digits(b)); }
+    private static boolean isEmpty(String s) { return s == null || s.trim().isEmpty(); }
     private static String digits(String s) {
         if (s == null) return "";
         StringBuilder out = new StringBuilder();
@@ -383,12 +578,12 @@ public class Chat extends AppCompatActivity {
     }
     private static boolean safeEq(String a, String b) { return a != null && b != null && a.equalsIgnoreCase(b); }
     private boolean isFromPeer(String srcNum, String srcUuid) {
-        boolean byNum  = notEmpty(peerNumber) && digitsEq(srcNum, peerNumber);
+        boolean byNum  = notEmpty(peerNumber) && digits(srcNum).equals(digits(peerNumber));
         boolean byUuid = notEmpty(peerUuid)   && safeEq(srcUuid, peerUuid);
         return byNum || byUuid;
     }
     private boolean isDestThisChat(String destNum, String destUuid) {
-        boolean numMatch  = notEmpty(destNum)  && notEmpty(peerNumber) && digitsEq(destNum,  peerNumber);
+        boolean numMatch  = notEmpty(destNum)  && notEmpty(peerNumber) && digits(destNum).equals(digits(peerNumber));
         boolean uuidMatch = notEmpty(destUuid) && notEmpty(peerUuid)   && safeEq(destUuid,  peerUuid);
         boolean bothEmpty = !notEmpty(destNum) && !notEmpty(destUuid);
         return numMatch || uuidMatch || bothEmpty;

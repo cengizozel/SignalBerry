@@ -22,6 +22,8 @@
 
         <activity android:name=".Messages" />
 
+        <activity android:name=".NewChat" />
+
         <activity
             android:name=".Chat"
             android:exported="false"
