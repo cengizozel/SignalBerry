@@ -1,5 +1,6 @@
 package com.example.signalberry;
 
+import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -92,10 +93,13 @@ public class Messages extends AppCompatActivity {
                 startActivity(new android.content.Intent(Messages.this, NewChat.class)));
 
         // read prefs / build bases
-        String host = getSharedPreferences("signalberry", MODE_PRIVATE).getString("ip", "");
-        myNumber    = getSharedPreferences("signalberry", MODE_PRIVATE).getString("number", "");
-        restBase    = normalizeBase(host);
-        bridgeBase  = makeBridgeBase(host);
+        SharedPreferences sp = getSharedPreferences("signalberry", MODE_PRIVATE);
+        String host       = sp.getString("ip", "");
+        String bridgePref = sp.getString("bridge", ""); // set by ServerConnect
+        myNumber          = sp.getString("number", "");
+
+        restBase  = normalizeBase(host);
+        bridgeBase = normalizeBase(isEmpty(bridgePref) ? makeBridgeBase(host) : bridgePref);
 
         if (isEmpty(host) || isEmpty(myNumber)) {
             Toast.makeText(this, "Missing server IP or number", Toast.LENGTH_SHORT).show();
@@ -507,15 +511,36 @@ public class Messages extends AppCompatActivity {
         return "ws://" + httpBase;
     }
 
-    private static String makeBridgeBase(String hostPort) {
-        String hostOnly = hostPort;
-        if (hostOnly.startsWith("http://"))  hostOnly = hostOnly.substring(7);
-        if (hostOnly.startsWith("https://")) hostOnly = hostOnly.substring(8);
-        if ("localhost:5000".equals(hostOnly) || "127.0.0.1:5000".equals(hostOnly)) hostOnly = "10.0.2.2:5000";
-        int colon = hostOnly.indexOf(':');
-        if (colon > 0) hostOnly = hostOnly.substring(0, colon);
-        return "http://" + hostOnly + ":9099";
+    private static String makeBridgeBase(String ipOrBase) {
+        String base = ipOrBase == null ? "" : ipOrBase.trim();
+
+        // pull out scheme
+        String scheme = "http";
+        if (base.startsWith("https://")) { scheme = "https"; base = base.substring(8); }
+        else if (base.startsWith("http://")) { scheme = "http"; base = base.substring(7); }
+
+        // emulator shortcuts
+        if ("localhost:5000".equals(base) || "127.0.0.1:5000".equals(base)) base = "10.0.2.2:5000";
+
+        // strip path
+        int slash = base.indexOf('/');
+        if (slash >= 0) base = base.substring(0, slash);
+
+        // host only
+        String host = base;
+        int colon = host.indexOf(':');
+        if (colon > 0) host = host.substring(0, colon);
+
+        boolean isIp = host.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")
+                || host.startsWith("[") || "localhost".equalsIgnoreCase(host) || "10.0.2.2".equals(host);
+
+        if (isIp) {
+            return "http://" + host + ":9099";
+        } else {
+            return scheme + "://bridge-" + host;
+        }
     }
+
 
     private static String httpGet(String urlStr) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();

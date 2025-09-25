@@ -155,12 +155,37 @@ public class ServerConnect extends AppCompatActivity {
     }
 
     private static String deriveBridgeBase(String ipOrBase) {
-        // normalize to host (strip scheme/port)
-        String base = ipOrBase.trim();
-        if (base.startsWith("http://"))  base = base.substring(7);
-        else if (base.startsWith("https://")) base = base.substring(8);
-        int colon = base.indexOf(':');
-        String host = (colon > 0) ? base.substring(0, colon) : base;
-        return "http://" + host + ":9099";
+        String base = ipOrBase == null ? "" : ipOrBase.trim();
+
+        // pull out scheme
+        String scheme = "http";
+        if (base.startsWith("https://")) { scheme = "https"; base = base.substring(8); }
+        else if (base.startsWith("http://")) { scheme = "http"; base = base.substring(7); }
+
+        // emulator shortcuts
+        if ("localhost:5000".equals(base) || "127.0.0.1:5000".equals(base)) base = "10.0.2.2:5000";
+
+        // strip any path
+        int slash = base.indexOf('/');
+        if (slash >= 0) base = base.substring(0, slash);
+
+        // extract host (drop port if present)
+        String host = base;
+        int colon = host.indexOf(':');
+        if (colon > 0) host = host.substring(0, colon);
+
+        // detect IP/localhost
+        boolean isIp = host.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")    // IPv4
+                || host.startsWith("[")                              // IPv6 literal
+                || "localhost".equalsIgnoreCase(host)
+                || "10.0.2.2".equals(host);
+
+        if (isIp) {
+            // bridge on fixed 9099 for IP targets
+            return "http://" + host + ":9099";
+        } else {
+            // domain: same scheme, host prefixed with bridge-
+            return scheme + "://bridge-" + host;
+        }
     }
 }
