@@ -117,6 +117,9 @@ public class Chat extends AppCompatActivity {
             String text = input.getText().toString().trim();
             if (text.isEmpty()) return;
 
+            long now = System.currentTimeMillis();
+            pushThreadHint(text, now);
+
             // optimistic pending bubble
             items.add(new MessageItem("me", text, ST_PENDING));
             chatAdapter.notifyItemInserted(items.size() - 1);
@@ -588,4 +591,16 @@ public class Chat extends AppCompatActivity {
         boolean bothEmpty = !notEmpty(destNum) && !notEmpty(destUuid);
         return numMatch || uuidMatch || bothEmpty;
     }
+    private void pushThreadHint(String text, long ts) {
+        try {
+            org.json.JSONObject h = new org.json.JSONObject();
+            h.put("peer_number", peerNumber == null ? "" : peerNumber);
+            h.put("peer_uuid",   peerUuid   == null ? "" : peerUuid);
+            h.put("peer_name",   peerName   == null ? "" : peerName);
+            h.put("text",        text == null ? "" : text);
+            h.put("ts",          ts);
+            prefs.edit().putString("thread_hint", h.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
 }

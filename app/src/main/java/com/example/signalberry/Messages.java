@@ -122,6 +122,7 @@ public class Messages extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         openWebSocket();
+        applyThreadHintIfAny();
     }
 
     @Override protected void onPause() {
@@ -350,17 +351,36 @@ public class Messages extends AppCompatActivity {
                 final String time     = formatShortTime(ts);
                 final long   tsFinal  = ts;
 
-                runOnUiThread(() -> {
-                    int idx = findRowIndex(number, uuid);
-                    if (idx >= 0) {
-                        Map<String, String> row = all.get(idx);
-                        row.put("snippet", snippet);
-                        row.put("time", time);
-                        row.put("ts", String.valueOf(tsFinal));
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        int idx = findRowIndex(number, uuid);
+                        if (idx >= 0) {
+                            Map<String, String> row = all.get(idx);
+                            long curTs = parseLongSafe(row.get("ts"));   // <- existing ts in UI
+                            if (tsFinal >= curTs) {                      // <- DO NOT DOWNGRADE
+                                row.put("snippet", snippet);
+                                row.put("time", time);
+                                row.put("ts", String.valueOf(tsFinal));
+                                sortByTsDesc(all);
+                                adapter.notifyDataSetChanged();
+                                filter(search.getText().toString());
+                            }
+                            // else: ignore older bridge result
+                        } else {
+                            // row doesn’t exist yet – add it
+                            Map<String, String> row = new HashMap<String, String>();
+                            row.put("name", nameByPeerKey.get(peerKey(number, uuid)));
+                            row.put("number", number == null ? "" : number);
+                            row.put("uuid",   uuid   == null ? "" : uuid);
+                            row.put("snippet", snippet);
+                            row.put("time", time);
+                            row.put("ts", String.valueOf(tsFinal));
+                            all.add(row);
+                            sortByTsDesc(all);
+                            adapter.notifyDataSetChanged();
+                            filter(search.getText().toString());
+                        }
                     }
-                    sortByTsDesc(all);
-                    adapter.notifyDataSetChanged();
-                    filter(search.getText().toString());
                 });
 
             } catch (Exception ignored) {}
@@ -538,4 +558,31 @@ public class Messages extends AppCompatActivity {
         if (cut > 0) return uuid.substring(0, cut);
         return (uuid.length() > 8) ? uuid.substring(0, 8) : uuid;
     }
+
+    private void applyThreadHintIfAny() {
+        try {
+            String raw = getSharedPreferences("signalberry", MODE_PRIVATE)
+                    .getString("thread_hint", null);
+            if (raw == null || raw.length() == 0) return;
+
+            JSONObject h = new JSONObject(raw);
+            String num  = h.optString("peer_number", "");
+            String uuid = h.optString("peer_uuid", "");
+            String text = h.optString("text", "");
+            long   ts   = h.optLong("ts", System.currentTimeMillis());
+
+            // Optimistic row update: adds new convo if missing, bumps to top, shows "You: ..."
+            updateRowImmediateUI(num, uuid, /*outgoing=*/true, text, ts);
+
+            // clear the hint so it doesn't re-apply
+            getSharedPreferences("signalberry", MODE_PRIVATE)
+                    .edit().remove("thread_hint").apply();
+
+            // optional: schedule a tiny reconcile to pull the last line from the bridge
+            handler.postDelayed(new Runnable() {
+                @Override public void run() { refreshOnePeer(num, uuid); }
+            }, 300);
+        } catch (Exception ignored) {}
+    }
+
 }
