@@ -186,11 +186,13 @@ public class Messages extends AppCompatActivity {
                         JSONArray items = obj.optJSONArray("items");
                         if (items != null && items.length() > 0) {
                             JSONObject last = items.getJSONObject(items.length() - 1);
-                            String dir  = last.optString("dir", "in");
-                            String text = last.optString("text", "");
-                            long ts     = last.optLong("serverTs", 0);
-                            String prefix = "out".equals(dir) ? "You: " : "";
-                            row.put("snippet", prefix + text);
+                            String dir   = last.optString("dir", "in");
+                            String text  = last.optString("text", "");
+                            String attId = last.optString("attId", "");
+                            long ts      = last.optLong("serverTs", 0);
+                            String prefix  = "out".equals(dir) ? "You: " : "";
+                            String display = (!text.isEmpty()) ? text : (!attId.isEmpty() ? "📷 Photo" : "");
+                            row.put("snippet", prefix + display);
                             row.put("time", formatShortTime(ts));
                             row.put("ts", String.valueOf(ts));
 
