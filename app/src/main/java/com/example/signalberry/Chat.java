@@ -110,7 +110,7 @@ public class Chat extends AppCompatActivity {
         LinearLayoutManager lm = new LinearLayoutManager(this);
         lm.setStackFromEnd(true);
         recycler.setLayoutManager(lm);
-        chatAdapter = new ChatAdapter(items, baseSignal); // pass Signal REST base for attachments
+        chatAdapter = new ChatAdapter(items, baseSignal, this);
         recycler.setAdapter(chatAdapter);
 
         // Composer
@@ -198,6 +198,10 @@ public class Chat extends AppCompatActivity {
         Uri uri = data.getData();
         if (uri == null) return;
 
+        EditText input = findViewById(R.id.input_message);
+        final String caption = input.getText().toString().trim();
+        input.setText("");
+
         new Thread(() -> {
             try {
                 String mimeRaw = getContentResolver().getType(uri);
@@ -213,12 +217,12 @@ public class Chat extends AppCompatActivity {
                 }
 
                 String b64 = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
-                boolean ok = sendAttachment(b64);
+                boolean ok = sendAttachment(b64, caption);
 
+                final String uriStr = uri.toString();
                 runOnUiThread(() -> {
                     if (ok) {
-                        String label = mime.startsWith("video/") ? "📹 Video" : "📷 Photo";
-                        items.add(new MessageItem("me", label, ST_SENT));
+                        items.add(new MessageItem("me", uriStr, caption.isEmpty() ? null : caption, ST_SENT, true));
                         chatAdapter.notifyItemInserted(items.size() - 1);
                         recycler.scrollToPosition(items.size() - 1);
                         saveHistory();
@@ -232,11 +236,11 @@ public class Chat extends AppCompatActivity {
         }).start();
     }
 
-    private boolean sendAttachment(String base64Data) {
+    private boolean sendAttachment(String base64Data, String caption) {
         try {
             String url = baseSignal + "/v2/send";
             JSONObject body = new JSONObject();
-            body.put("message", "");
+            body.put("message", caption == null ? "" : caption);
             body.put("number", myNumber);
             JSONArray rcpts = new JSONArray();
             if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
@@ -342,24 +346,25 @@ public class Chat extends AppCompatActivity {
             if (data != null) {
                 long ts = env.optLong("timestamp", 0);
 
-                // text
                 String text = data.optString("message", data.optString("text", "")).trim();
-                if (!isEmpty(text)) {
+                JSONArray atts = data.optJSONArray("attachments");
+                boolean hasImage = atts != null && atts.length() > 0;
+
+                if (!isEmpty(text) && !hasImage) {
                     items.add(new MessageItem("peer", text, ST_DELIVERED));
                     changed = true;
                     bumpLastTs(ts);
                 }
 
-                // images
-                JSONArray atts = data.optJSONArray("attachments");
-                if (atts != null) {
+                if (hasImage) {
                     for (int i = 0; i < atts.length(); i++) {
                         JSONObject a = atts.optJSONObject(i);
                         if (a == null) continue;
                         String cid  = a.optString("id", "");
                         String mime = a.optString("contentType", "");
                         if (!isEmpty(cid) && mime != null && mime.startsWith("image/")) {
-                            items.add(new MessageItem("peer", cid, mime, ST_DELIVERED, true));
+                            // text becomes caption; empty caption = null
+                            items.add(new MessageItem("peer", cid, mime, isEmpty(text) ? null : text, ST_DELIVERED));
                             changed = true;
                             bumpLastTs(ts);
                         }
@@ -391,7 +396,7 @@ public class Chat extends AppCompatActivity {
                             String cid  = a.optString("id", "");
                             String mime = a.optString("contentType", "");
                             if (!isEmpty(cid) && mime != null && mime.startsWith("image/")) {
-                                items.add(new MessageItem("me", cid, mime, ST_SENT, true));
+                                items.add(new MessageItem("me", cid, mime, null, ST_SENT));
                                 changed = true;
                             }
                         }
@@ -566,9 +571,15 @@ public class Chat extends AppCompatActivity {
                 int status  = o.optInt("status", ST_DELIVERED);
                 String type = o.optString("type", "text");
                 if ("image".equals(type)) {
-                    String cid  = o.optString("attId", "");
-                    String mime = o.optString("mime", "");
-                    items.add(new MessageItem(from, cid, mime, status, true));
+                    String cid      = o.optString("attId", "");
+                    String mime     = o.optString("mime", "");
+                    String caption  = o.optString("caption", "");
+                    String localUri = o.optString("localUri", "");
+                    if (!localUri.isEmpty()) {
+                        items.add(new MessageItem(from, localUri, caption.isEmpty() ? null : caption, status, true));
+                    } else {
+                        items.add(new MessageItem(from, cid, mime, caption.isEmpty() ? null : caption, status));
+                    }
                 } else {
                     String text = o.optString("text", "");
                     items.add(new MessageItem(from, text, status));
@@ -588,8 +599,10 @@ public class Chat extends AppCompatActivity {
                 o.put("status", m.status);
                 if (m.type == MessageItem.TYPE_IMAGE) {
                     o.put("type", "image");
-                    o.put("attId", m.attachmentId);
-                    o.put("mime",  m.mime == null ? "" : m.mime);
+                    o.put("attId",    m.attachmentId == null ? "" : m.attachmentId);
+                    o.put("mime",     m.mime == null ? "" : m.mime);
+                    o.put("caption",  m.caption == null ? "" : m.caption);
+                    o.put("localUri", m.localUri == null ? "" : m.localUri);
                 } else {
                     o.put("type", "text");
                     o.put("text", m.text == null ? "" : m.text);
