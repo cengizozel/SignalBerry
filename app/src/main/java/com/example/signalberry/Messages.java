@@ -6,7 +6,13 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.ImageButton;
 import android.widget.ScrollView;
@@ -116,6 +122,8 @@ public class Messages extends AppCompatActivity {
         }));
         adapter = new MessagesAdapter(this, all, avatarCache);
         list.setAdapter(adapter);
+
+        loadSelfAvatar();
 
         // Initial load
         loadConversations();
@@ -475,6 +483,69 @@ public class Messages extends AppCompatActivity {
         }
         ((ListView) findViewById(R.id.list_people)).setAdapter(
                 new MessagesAdapter(this, filtered, avatarCache));
+    }
+
+    // ---------------- Self avatar ----------------
+    private void loadSelfAvatar() {
+        ImageView iv = findViewById(R.id.toolbar_avatar);
+        int size = (int)(36 * getResources().getDisplayMetrics().density + 0.5f);
+        iv.setImageBitmap(initialsCircle(myNumber, size));
+
+        new Thread(() -> {
+            try {
+                // Look up own UUID from the accounts list — try /v1/accounts first
+                String json = httpGet(restBase + "/v1/accounts");
+                // accounts is a JSON array of numbers; no UUID exposed there.
+                // Instead use the contacts endpoint with own number to find self entry.
+                // Fallback: try /v1/contacts/{myNumber} and look for self in list.
+                String contactsJson = httpGet(restBase + "/v1/contacts/" + URLEncoder.encode(myNumber, "UTF-8"));
+                org.json.JSONArray arr = new org.json.JSONArray(contactsJson);
+                String selfUuid = null;
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject c = arr.getJSONObject(i);
+                    String num = c.optString("number", "");
+                    if (digits(num).equals(digits(myNumber))) {
+                        selfUuid = c.optString("uuid", "");
+                        break;
+                    }
+                }
+                if (isEmpty(selfUuid)) return;
+                Bitmap bm = avatarCache.fetch(myNumber, selfUuid);
+                if (bm == null) return;
+                final Bitmap circle = circleClip(bm, size);
+                handler.post(() -> iv.setImageBitmap(circle));
+            } catch (Exception ignored) {}
+        }).start();
+    }
+
+    private Bitmap initialsCircle(String label, int size) {
+        int[] palette = {0xFF1565C0, 0xFF2E7D32, 0xFF6A1B9A, 0xFF00838F,
+                         0xFFAD1457, 0xFF4527A0, 0xFF00695C, 0xFFE65100};
+        int color = palette[Math.abs((label == null ? 0 : label.hashCode()) % palette.length)];
+        String letter = (label != null && !label.isEmpty()) ? label.substring(0, 1).toUpperCase() : "?";
+        Bitmap bm = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(bm);
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fill.setColor(color);
+        canvas.drawCircle(size / 2f, size / 2f, size / 2f, fill);
+        Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+        text.setColor(Color.WHITE);
+        text.setTextSize(size * 0.4f);
+        text.setTextAlign(Paint.Align.CENTER);
+        text.setTypeface(Typeface.DEFAULT_BOLD);
+        canvas.drawText(letter, size / 2f, size / 2f - (text.ascent() + text.descent()) / 2f, text);
+        return bm;
+    }
+
+    private static Bitmap circleClip(Bitmap src, int size) {
+        Bitmap scaled = Bitmap.createScaledBitmap(src, size, size, true);
+        Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas canvas = new Canvas(out);
+        Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setShader(new android.graphics.BitmapShader(scaled,
+                android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP));
+        canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint);
+        return out;
     }
 
     // ---------------- Utils ----------------
