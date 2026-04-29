@@ -1,12 +1,19 @@
 package com.example.signalberry;
 
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Base64;
+import android.webkit.MimeTypeMap;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.Toast;
+
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -108,7 +115,16 @@ public class Chat extends AppCompatActivity {
 
         // Composer
         EditText input = findViewById(R.id.input_message);
+        ImageButton attach = findViewById(R.id.btn_attach);
         ImageButton send = findViewById(R.id.btn_send);
+
+        attach.setOnClickListener(v -> {
+            Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
+            pick.setType("*/*");
+            pick.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
+            pick.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(Intent.createChooser(pick, "Select photo or video"), 101);
+        });
         send.setOnClickListener(v -> {
             String text = input.getText().toString().trim();
             if (text.isEmpty()) return;
@@ -172,6 +188,65 @@ public class Chat extends AppCompatActivity {
         super.onPause();
         closeWebSocket();
         stopBridgePolling();
+    }
+
+    // -------------------- ATTACHMENT PICK --------------------
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != 101 || resultCode != RESULT_OK || data == null) return;
+        Uri uri = data.getData();
+        if (uri == null) return;
+
+        new Thread(() -> {
+            try {
+                String mimeRaw = getContentResolver().getType(uri);
+                final String mime = (mimeRaw != null) ? mimeRaw : "application/octet-stream";
+
+                byte[] bytes;
+                try (InputStream is = getContentResolver().openInputStream(uri);
+                     ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+                    bytes = bos.toByteArray();
+                }
+
+                String b64 = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
+                boolean ok = sendAttachment(b64);
+
+                runOnUiThread(() -> {
+                    if (ok) {
+                        String label = mime.startsWith("video/") ? "📹 Video" : "📷 Photo";
+                        items.add(new MessageItem("me", label, ST_SENT));
+                        chatAdapter.notifyItemInserted(items.size() - 1);
+                        recycler.scrollToPosition(items.size() - 1);
+                        saveHistory();
+                    } else {
+                        Toast.makeText(this, "Failed to send attachment", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+            }
+        }).start();
+    }
+
+    private boolean sendAttachment(String base64Data) {
+        try {
+            String url = baseSignal + "/v2/send";
+            JSONObject body = new JSONObject();
+            body.put("message", "");
+            body.put("number", myNumber);
+            JSONArray rcpts = new JSONArray();
+            if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
+            body.put("recipients", rcpts);
+            JSONArray atts = new JSONArray();
+            atts.put(base64Data);
+            body.put("base64_attachments", atts);
+            int code = httpPostJson(url, body.toString());
+            return code >= 200 && code < 300;
+        } catch (Exception e) { return false; }
     }
 
     // -------------------- SEND --------------------
