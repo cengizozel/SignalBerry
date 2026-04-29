@@ -51,6 +51,8 @@ public class Messages extends AppCompatActivity {
     // Contact display name cache
     private final Map<String,String> nameByPeerKey = new HashMap<>();
 
+    private AvatarCache avatarCache;
+
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.messages);
@@ -63,8 +65,6 @@ public class Messages extends AppCompatActivity {
         search = findViewById(R.id.search);
         ImageButton plus = findViewById(R.id.toolbar_add);
 
-        adapter = new MessagesAdapter(this, all);
-        list.setAdapter(adapter);
 
         list.setOnItemClickListener((parent, view, position, id) -> {
             @SuppressWarnings("unchecked")
@@ -94,13 +94,17 @@ public class Messages extends AppCompatActivity {
         String bridgePref = sp.getString("bridge", ""); // set by ServerConnect
         myNumber          = sp.getString("number", "");
 
-        restBase  = normalizeBase(host);
+        restBase   = normalizeBase(host);
         bridgeBase = normalizeBase(isEmpty(bridgePref) ? deriveBridgeBase(host) : bridgePref);
 
         if (isEmpty(host) || isEmpty(myNumber)) {
             Toast.makeText(this, "Missing server IP or number", Toast.LENGTH_SHORT).show();
             return;
         }
+
+        avatarCache = new AvatarCache(getCacheDir(), restBase);
+        adapter = new MessagesAdapter(this, all, avatarCache);
+        list.setAdapter(adapter);
 
         // Initial load
         loadConversations();
@@ -453,7 +457,7 @@ public class Messages extends AppCompatActivity {
             }
         }
         ((ListView) findViewById(R.id.list_people)).setAdapter(
-                new MessagesAdapter(this, filtered));
+                new MessagesAdapter(this, filtered, avatarCache));
     }
 
     // ---------------- Utils ----------------
