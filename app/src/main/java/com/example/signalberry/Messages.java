@@ -6,6 +6,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
+import android.app.AlertDialog;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -123,7 +125,20 @@ public class Messages extends AppCompatActivity {
         adapter = new MessagesAdapter(this, all, avatarCache);
         list.setAdapter(adapter);
 
+        loadConversationCache();
         loadSelfAvatar();
+
+        ImageView toolbarAvatar = findViewById(R.id.toolbar_avatar);
+        toolbarAvatar.setOnClickListener(v -> {
+            new AlertDialog.Builder(this)
+                    .setTitle("Settings")
+                    .setItems(new String[]{"Log out"}, (dialog, which) -> {
+                        getSharedPreferences("signalberry", MODE_PRIVATE).edit().clear().apply();
+                        startActivity(new Intent(Messages.this, ServerConnect.class));
+                        finish();
+                    })
+                    .show();
+        });
 
         // Initial load
         loadConversations();
@@ -241,6 +256,7 @@ public class Messages extends AppCompatActivity {
                 }
                 sortByTsDesc(withMsg);
 
+                saveConversationCache(withMsg);
                 runOnUiThread(() -> {
                     all.clear();
                     all.addAll(withMsg);
@@ -483,6 +499,43 @@ public class Messages extends AppCompatActivity {
         }
         ((ListView) findViewById(R.id.list_people)).setAdapter(
                 new MessagesAdapter(this, filtered, avatarCache));
+    }
+
+    // ---------------- Conversation cache ----------------
+    private static final String PREF_CONV_CACHE = "conv_cache";
+
+    private void saveConversationCache(List<Map<String, String>> rows) {
+        try {
+            JSONArray arr = new JSONArray();
+            for (Map<String, String> row : rows) {
+                JSONObject o = new JSONObject();
+                for (Map.Entry<String, String> e : row.entrySet())
+                    if (e.getValue() != null) o.put(e.getKey(), e.getValue());
+                arr.put(o);
+            }
+            prefs.edit().putString(PREF_CONV_CACHE, arr.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
+    private void loadConversationCache() {
+        try {
+            String raw = prefs.getString(PREF_CONV_CACHE, "[]");
+            JSONArray arr = new JSONArray(raw);
+            if (arr.length() == 0) return;
+            List<Map<String, String>> cached = new ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.getJSONObject(i);
+                Map<String, String> row = new HashMap<>();
+                for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
+                    String k = it.next();
+                    row.put(k, o.optString(k, ""));
+                }
+                cached.add(row);
+            }
+            all.clear();
+            all.addAll(cached);
+            adapter.notifyDataSetChanged();
+        } catch (Exception ignored) {}
     }
 
     // ---------------- Self avatar ----------------

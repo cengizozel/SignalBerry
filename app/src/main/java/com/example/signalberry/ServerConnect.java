@@ -19,6 +19,17 @@ public class ServerConnect extends AppCompatActivity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
+        String savedIp     = prefs.getString("ip", "");
+        String savedNumber = prefs.getString("number", "");
+
+        if (!savedIp.isEmpty() && !savedNumber.isEmpty()) {
+            startActivity(new Intent(this, Messages.class));
+            finish();
+            return;
+        }
+
         setContentView(R.layout.server_connect);
         setTitle("SignalBerry");
 
@@ -26,11 +37,9 @@ public class ServerConnect extends AppCompatActivity {
         EditText numberField = findViewById(R.id.input_number);
         Button connectBtn = findViewById(R.id.btn_connect);
 
-        SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
-
         // Prefill from last run
-        ipField.setText(prefs.getString("ip", ""));
-        numberField.setText(prefs.getString("number", ""));
+        ipField.setText(savedIp);
+        numberField.setText(savedNumber);
 
         connectBtn.setOnClickListener(v -> {
             String ip = ipField.getText().toString().trim();
