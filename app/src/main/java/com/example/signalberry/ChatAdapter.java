@@ -24,15 +24,20 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private static final int VIEW_PEER_IMAGE = 3;
     private static final int VIEW_ME_IMAGE   = 4;
 
+    interface OnImageClickListener { void onImageClick(int position); }
+
     private final List<MessageItem> data;
     private final String restBase;
     private final ImageLoader loader;
+    private OnImageClickListener imageClickListener;
 
     ChatAdapter(List<MessageItem> data, String restBase, Context ctx) {
         this.data = data;
         this.restBase = restBase;
         this.loader = new ImageLoader(ctx);
     }
+
+    void setOnImageClickListener(OnImageClickListener l) { this.imageClickListener = l; }
 
     @Override public int getItemViewType(int position) {
         MessageItem m = data.get(position);
@@ -60,8 +65,8 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         MessageItem m = data.get(pos);
         if (h instanceof MeTextVH) ((MeTextVH) h).bind(m);
         else if (h instanceof PeerTextVH) ((PeerTextVH) h).bind(m);
-        else if (h instanceof MeImageVH)  ((MeImageVH) h).bind(m, loader, restBase);
-        else if (h instanceof PeerImageVH)((PeerImageVH) h).bind(m, loader, restBase);
+        else if (h instanceof MeImageVH)  ((MeImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
+        else if (h instanceof PeerImageVH)((PeerImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
     }
 
     @Override public int getItemCount() { return data.size(); }
@@ -94,11 +99,12 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             iv = v.findViewById(R.id.ivImage);
             tvCaption = v.findViewById(R.id.tvCaption);
         }
-        void bind(MessageItem m, ImageLoader loader, String base) {
+        void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
             String src = m.localUri != null ? m.localUri : base + "/v1/attachments/" + m.attachmentId;
             iv.setImageDrawable(null);
             iv.setTag(src);
             loader.load(src, iv);
+            iv.setOnClickListener(l != null ? v -> l.onImageClick(pos) : null);
             if (m.caption != null && !m.caption.isEmpty()) {
                 tvCaption.setText(m.caption);
                 tvCaption.setVisibility(View.VISIBLE);
@@ -117,11 +123,12 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvStatus = v.findViewById(R.id.tvStatus);
             tvCaption = v.findViewById(R.id.tvCaption);
         }
-        void bind(MessageItem m, ImageLoader loader, String base) {
+        void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
             String src = m.localUri != null ? m.localUri : base + "/v1/attachments/" + m.attachmentId;
             iv.setImageDrawable(null);
             iv.setTag(src);
             loader.load(src, iv);
+            iv.setOnClickListener(l != null ? v -> l.onImageClick(pos) : null);
             tvStatus.setText(statusMark(m.status));
             if (m.caption != null && !m.caption.isEmpty()) {
                 tvCaption.setText(m.caption);

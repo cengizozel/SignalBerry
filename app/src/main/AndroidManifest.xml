@@ -26,6 +26,11 @@
         <activity android:name=".NewChat" />
 
         <activity
+            android:name=".ImageViewerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+
+        <activity
             android:name=".Chat"
             android:exported="false"
             android:windowSoftInputMode="stateHidden|adjustResize"/>

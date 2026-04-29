@@ -111,6 +111,28 @@ public class Chat extends AppCompatActivity {
         lm.setStackFromEnd(true);
         recycler.setLayoutManager(lm);
         chatAdapter = new ChatAdapter(items, baseSignal, this);
+        chatAdapter.setOnImageClickListener(pos -> {
+            ArrayList<String> sources = new ArrayList<>();
+            int viewerPos = 0;
+            int imgIndex = 0;
+            for (int i = 0; i < items.size(); i++) {
+                MessageItem m = items.get(i);
+                if (m.type == MessageItem.TYPE_IMAGE) {
+                    String src = m.localUri != null ? m.localUri
+                            : (m.attachmentId != null ? baseSignal + "/v1/attachments/" + m.attachmentId : null);
+                    if (src != null) {
+                        if (i == pos) viewerPos = imgIndex;
+                        sources.add(src);
+                        imgIndex++;
+                    }
+                }
+            }
+            if (sources.isEmpty()) return;
+            android.content.Intent intent = new android.content.Intent(Chat.this, ImageViewerActivity.class);
+            intent.putStringArrayListExtra(ImageViewerActivity.EXTRA_SOURCES, sources);
+            intent.putExtra(ImageViewerActivity.EXTRA_POSITION, viewerPos);
+            startActivity(intent);
+        });
         recycler.setAdapter(chatAdapter);
 
         // Composer
