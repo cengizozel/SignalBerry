@@ -34,7 +34,8 @@ import okio.ByteString;
 public class Messages extends AppCompatActivity {
 
     private final List<Map<String, String>> all = new ArrayList<>();
-    private android.widget.SimpleAdapter adapter;
+    private final Map<String, Integer> unreadCounts = new HashMap<>();
+    private MessagesAdapter adapter;
 
     private EditText search;
     private boolean isLoading = false;
@@ -64,10 +65,7 @@ public class Messages extends AppCompatActivity {
         search = findViewById(R.id.search);
         ImageButton plus = findViewById(R.id.toolbar_add);
 
-        adapter = new android.widget.SimpleAdapter(
-                this, all, R.layout.row_chat,
-                new String[]{"name", "snippet", "time"},
-                new int[]{R.id.name, R.id.snippet, R.id.time});
+        adapter = new MessagesAdapter(this, all, unreadCounts);
         list.setAdapter(adapter);
 
         list.setOnItemClickListener((parent, view, position, id) -> {
@@ -126,6 +124,7 @@ public class Messages extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         openWebSocket();
+        fetchUnread();
         applyThreadHintIfAny();
     }
 
@@ -449,6 +448,31 @@ public class Messages extends AppCompatActivity {
         return "";
     }
 
+    // ---------------- Unread counts ----------------
+    private void fetchUnread() {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    String json = httpGet(bridgeBase + "/unread");
+                    JSONObject obj = new JSONObject(json);
+                    final Map<String, Integer> counts = new HashMap<>();
+                    java.util.Iterator<String> keys = obj.keys();
+                    while (keys.hasNext()) {
+                        String key = keys.next();
+                        counts.put(key, obj.optInt(key, 0));
+                    }
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            unreadCounts.clear();
+                            unreadCounts.putAll(counts);
+                            adapter.notifyDataSetChanged();
+                        }
+                    });
+                } catch (Exception ignored) {}
+            }
+        }).start();
+    }
+
     // ---------------- Search filter ----------------
     private void filter(String q) {
         q = q.toLowerCase(Locale.US).trim();
@@ -461,11 +485,8 @@ public class Messages extends AppCompatActivity {
                 filtered.add(m);
             }
         }
-        android.widget.SimpleAdapter newAdapter = new android.widget.SimpleAdapter(
-                this, filtered, R.layout.row_chat,
-                new String[]{"name", "snippet", "time"},
-                new int[]{R.id.name, R.id.snippet, R.id.time});
-        ((ListView) findViewById(R.id.list_people)).setAdapter(newAdapter);
+        ((ListView) findViewById(R.id.list_people)).setAdapter(
+                new MessagesAdapter(this, filtered, unreadCounts));
     }
 
     // ---------------- Utils ----------------
