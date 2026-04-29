@@ -8,6 +8,7 @@ import android.text.Editable;
 import android.text.TextWatcher;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.os.Build;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -17,7 +18,6 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.ImageButton;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
@@ -62,8 +62,6 @@ public class Messages extends AppCompatActivity {
     private final Map<String,String> nameByPeerKey = new HashMap<>();
 
     private AvatarCache avatarCache;
-    private TextView debugLog;
-    private ScrollView debugScroll;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -114,16 +112,11 @@ public class Messages extends AppCompatActivity {
             return;
         }
 
-        debugLog = findViewById(R.id.debug_log);
-        debugScroll = findViewById(R.id.debug_scroll);
-
         avatarCache = new AvatarCache(getCacheDir(), restBase, myNumber);
-        avatarCache.setLogger(msg -> handler.post(() -> {
-            debugLog.append(msg + "\n");
-            debugScroll.post(() -> debugScroll.fullScroll(ScrollView.FOCUS_DOWN));
-        }));
         adapter = new MessagesAdapter(this, all, avatarCache);
         list.setAdapter(adapter);
+
+        // service start moved to onResume so activity is guaranteed visible
 
         loadConversationCache();
         loadSelfAvatar();
@@ -159,6 +152,18 @@ public class Messages extends AppCompatActivity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 200);
+        }
+
+        android.content.Intent svc = new android.content.Intent(this, MessageService.class);
+        if (Build.VERSION.SDK_INT >= 26) {
+            startForegroundService(svc);
+        } else {
+            startService(svc);
+        }
         openWebSocket();
         refreshUnreadFromLocal();
         applyThreadHintIfAny();
@@ -192,7 +197,10 @@ public class Messages extends AppCompatActivity {
                     if (isEmpty(num) && isEmpty(uuid)) continue;
 
                     String key = peerKey(num, uuid);
-                    if (!isEmpty(display)) nameByPeerKey.put(key, display);
+                    if (!isEmpty(display)) {
+                        nameByPeerKey.put(key, display);
+                        prefs.edit().putString("contact_name_" + key, display).apply();
+                    }
 
                     JSONObject prof = c.optJSONObject("profile");
                     boolean hasAvatar = prof != null && prof.optBoolean("has_avatar", false);
