@@ -55,8 +55,9 @@ class MessagesAdapter extends BaseAdapter {
         TextView  tvBadge   = convertView.findViewById(R.id.badge);
         ImageView ivAvatar  = convertView.findViewById(R.id.avatar);
 
-        String name   = item.get("name");
-        String number = item.get("number");
+        String name       = item.get("name");
+        String number     = item.get("number");
+        String avatarPath = item.get("avatar_path");
 
         tvName.setText(name);
         tvSnippet.setText(item.get("snippet"));
@@ -81,8 +82,9 @@ class MessagesAdapter extends BaseAdapter {
 
         if (avatarCache != null && number != null && !number.isEmpty()) {
             final String tag = number;
+            final String path = avatarPath;
             new Thread(() -> {
-                Bitmap raw = avatarCache.fetch(number);
+                Bitmap raw = avatarCache.fetch(number, path);
                 if (raw == null) return;
                 Bitmap circle = circleCrop(raw, sizePx);
                 handler.post(() -> {

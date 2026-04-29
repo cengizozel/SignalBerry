@@ -9,6 +9,8 @@ import android.text.TextWatcher;
 import android.widget.EditText;
 import android.widget.ListView;
 import android.widget.ImageButton;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -52,6 +54,8 @@ public class Messages extends AppCompatActivity {
     private final Map<String,String> nameByPeerKey = new HashMap<>();
 
     private AvatarCache avatarCache;
+    private TextView debugLog;
+    private ScrollView debugScroll;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -102,7 +106,14 @@ public class Messages extends AppCompatActivity {
             return;
         }
 
-        avatarCache = new AvatarCache(getCacheDir(), restBase);
+        debugLog = findViewById(R.id.debug_log);
+        debugScroll = findViewById(R.id.debug_scroll);
+
+        avatarCache = new AvatarCache(getCacheDir(), restBase, myNumber);
+        avatarCache.setLogger(msg -> handler.post(() -> {
+            debugLog.append(msg + "\n");
+            debugScroll.post(() -> debugScroll.fullScroll(ScrollView.FOCUS_DOWN));
+        }));
         adapter = new MessagesAdapter(this, all, avatarCache);
         list.setAdapter(adapter);
 
@@ -151,6 +162,7 @@ public class Messages extends AppCompatActivity {
                 for (int i = 0; i < contacts.length(); i++) {
                     JSONObject c = contacts.getJSONObject(i);
 
+
                     String display = chooseDisplayName(c);
                     String num     = c.optString("number", "");
                     String uuid    = c.optString("uuid", "");
@@ -159,13 +171,18 @@ public class Messages extends AppCompatActivity {
                     String key = peerKey(num, uuid);
                     if (!isEmpty(display)) nameByPeerKey.put(key, display);
 
+                    JSONObject prof = c.optJSONObject("profile");
+                    boolean hasAvatar = prof != null && prof.optBoolean("has_avatar", false);
+                    String avatarPath = hasAvatar ? uuid : "";
+
                     Map<String, String> row = new HashMap<>();
-                    row.put("name", display);
-                    row.put("snippet", "");
-                    row.put("time", "");
-                    row.put("number", num);
-                    row.put("uuid",   uuid);
-                    row.put("ts",     "0");
+                    row.put("name",        display);
+                    row.put("snippet",     "");
+                    row.put("time",        "");
+                    row.put("number",      num);
+                    row.put("uuid",        uuid);
+                    row.put("ts",          "0");
+                    row.put("avatar_path", avatarPath);
                     rows.add(row);
                 }
 

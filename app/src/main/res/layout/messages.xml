@@ -67,4 +67,20 @@
         android:dividerHeight="1dp"
         android:paddingStart="8dp"
         android:paddingEnd="8dp" />
+
+    <!-- DEBUG log — remove when avatar loading is confirmed working -->
+    <ScrollView
+        android:id="@+id/debug_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="160dp"
+        android:background="#CC000000">
+        <TextView
+            android:id="@+id/debug_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="6dp"
+            android:textColor="#00FF00"
+            android:textSize="10sp"
+            android:fontFamily="monospace" />
+    </ScrollView>
 </LinearLayout>

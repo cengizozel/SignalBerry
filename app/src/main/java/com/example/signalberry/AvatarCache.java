@@ -4,18 +4,19 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.util.Log;
 
-import org.json.JSONObject;
-
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.util.HashMap;
 import java.util.Map;
 
 class AvatarCache {
+
+    interface Logger { void log(String msg); }
 
     private static final String TAG = "AvatarCache";
     private static final long TTL_MS = 24L * 60 * 60 * 1000;
@@ -23,17 +24,36 @@ class AvatarCache {
 
     private final File dir;
     private final String baseSignal;
+    private final String myNumber;
+    private Logger logger;
 
-    AvatarCache(File cacheDir, String baseSignal) {
+    AvatarCache(File cacheDir, String baseSignal, String myNumber) {
         this.dir = new File(cacheDir, "avatars");
         this.dir.mkdirs();
         this.baseSignal = baseSignal;
+        this.myNumber = myNumber;
     }
 
-    /** May block on network — call from a background thread. Returns null if no avatar. */
-    Bitmap fetch(String number) {
+    void setLogger(Logger l) { this.logger = l; }
+
+    private void log(String msg) {
+        Log.d(TAG, msg);
+        if (logger != null) logger.log(msg);
+    }
+
+    /**
+     * Fetch avatar for a contact by UUID.
+     * avatarUuid must be non-empty; returns null if contact has no avatar.
+     * May block on network — call from a background thread.
+     */
+    Bitmap fetch(String number, String avatarUuid) {
         String key = Utils.digits(number);
         if (key.isEmpty()) key = number;
+
+        if (avatarUuid == null || avatarUuid.isEmpty()) {
+            log("no avatar for " + key);
+            return null;
+        }
 
         synchronized (mem) {
             if (mem.containsKey(key)) return mem.get(key);
@@ -43,40 +63,28 @@ class AvatarCache {
         if (f.exists() && System.currentTimeMillis() - f.lastModified() < TTL_MS) {
             Bitmap bm = BitmapFactory.decodeFile(f.getAbsolutePath());
             if (bm != null) {
+                log("disk hit: " + key);
                 synchronized (mem) { mem.put(key, bm); }
                 return bm;
             }
         }
 
         try {
-            String profileUrl = baseSignal + "/v1/profiles/" + number;
-            Log.d(TAG, "fetch profile: " + profileUrl);
-            String json = Utils.httpGet(profileUrl);
-            Log.d(TAG, "profile response: " + json);
-
-            if (json.startsWith("[")) {
-                Log.d(TAG, "profile returned array, skipping");
-                return null;
-            }
-
-            JSONObject obj = new JSONObject(json);
-            String avatar = obj.optString("avatar", "");
-            Log.d(TAG, "avatar field: '" + avatar + "'");
-            if (avatar.isEmpty()) return null;
-
-            String attUrl = baseSignal + "/v1/attachments/" + avatar;
-            Log.d(TAG, "fetch attachment: " + attUrl);
-            byte[] bytes = getBytes(attUrl);
-            Log.d(TAG, "attachment bytes: " + (bytes == null ? "null" : bytes.length));
+            String url = baseSignal
+                    + "/v1/contacts/" + URLEncoder.encode(myNumber, "UTF-8")
+                    + "/" + avatarUuid + "/avatar";
+            log("GET " + url);
+            byte[] bytes = getBytes(url);
+            log("bytes: " + (bytes == null ? "null" : bytes.length));
             if (bytes == null || bytes.length == 0) return null;
 
             try (FileOutputStream fos = new FileOutputStream(f)) { fos.write(bytes); }
             Bitmap bm = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-            Log.d(TAG, "decoded bitmap: " + bm);
+            log("bitmap: " + bm);
             if (bm != null) synchronized (mem) { mem.put(key, bm); }
             return bm;
         } catch (Exception e) {
-            Log.e(TAG, "fetch failed for " + number, e);
+            log("ERROR: " + e);
             return null;
         }
     }
@@ -94,7 +102,6 @@ class AvatarCache {
         c.setReadTimeout(8000);
         c.setRequestMethod("GET");
         int code = c.getResponseCode();
-        Log.d(TAG, "getBytes " + urlStr + " -> " + code);
         if (code >= 400) { c.disconnect(); return null; }
         try (InputStream is = c.getInputStream();
              ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
