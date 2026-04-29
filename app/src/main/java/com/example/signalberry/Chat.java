@@ -164,7 +164,12 @@ public class Chat extends AppCompatActivity {
         openWebSocket();
         startBridgePolling();
         fetchFromBridgeOnce(); // quick catch-up
-        postRead(System.currentTimeMillis());
+        // mark this chat as read immediately (local, no network)
+        String chatKey = notEmpty(peerNumber) ? digits(peerNumber) : (peerUuid != null ? peerUuid : "");
+        prefs.edit()
+                .putLong("read_ts_" + chatKey, System.currentTimeMillis())
+                .putString("last_read_peer", chatKey)
+                .apply();
     }
 
     @Override protected void onPause() {
@@ -558,26 +563,7 @@ public class Chat extends AppCompatActivity {
             return out.isEmpty() ? "{}" : out;
         } finally { c.disconnect(); }
     }
-    private void postRead(final long ts) {
-        final String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
-        if (!notEmpty(peer)) return;
-        new Thread(new Runnable() {
-            @Override public void run() {
-                try {
-                    String url = baseBridge + "/read?peer="
-                            + URLEncoder.encode(peer, "UTF-8") + "&ts=" + ts;
-                    HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-                    c.setConnectTimeout(5000);
-                    c.setReadTimeout(5000);
-                    c.setRequestMethod("POST");
-                    c.getResponseCode();
-                    c.disconnect();
-                } catch (Exception ignored) {}
-            }
-        }).start();
-    }
-
-    private static int httpPostJson(String urlStr, String json) throws Exception {
+private static int httpPostJson(String urlStr, String json) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
         c.setConnectTimeout(8000); c.setReadTimeout(8000);
         c.setRequestMethod("POST");

@@ -15,17 +15,15 @@ class MessagesAdapter extends BaseAdapter {
 
     private final Context ctx;
     private final List<Map<String, String>> data;
-    private final Map<String, Integer> unread;
 
-    MessagesAdapter(Context ctx, List<Map<String, String>> data, Map<String, Integer> unread) {
-        this.ctx    = ctx;
-        this.data   = data;
-        this.unread = unread;
+    MessagesAdapter(Context ctx, List<Map<String, String>> data) {
+        this.ctx  = ctx;
+        this.data = data;
     }
 
-    @Override public int getCount()              { return data.size(); }
-    @Override public Object getItem(int pos)     { return data.get(pos); }
-    @Override public long getItemId(int pos)     { return pos; }
+    @Override public int getCount()          { return data.size(); }
+    @Override public Object getItem(int pos) { return data.get(pos); }
+    @Override public long getItemId(int pos) { return pos; }
 
     @Override
     public View getView(int position, View convertView, ViewGroup parent) {
@@ -43,11 +41,8 @@ class MessagesAdapter extends BaseAdapter {
         tvSnippet.setText(item.get("snippet"));
         tvTime.setText(item.get("time"));
 
-        String number = item.get("number");
-        String uuid   = item.get("uuid");
-        String peer   = !isEmpty(number) ? digits(number) : safeTrim(uuid);
-
-        int count = (peer != null && unread.containsKey(peer)) ? unread.get(peer) : 0;
+        int count = 0;
+        try { count = Integer.parseInt(item.get("unread")); } catch (Exception ignored) {}
 
         if (count > 0) {
             tvBadge.setVisibility(View.VISIBLE);
@@ -61,17 +56,5 @@ class MessagesAdapter extends BaseAdapter {
         }
 
         return convertView;
-    }
-
-    private static boolean isEmpty(String s) { return s == null || s.trim().isEmpty(); }
-    private static String safeTrim(String s) { return s == null ? null : s.trim(); }
-    private static String digits(String s) {
-        if (s == null) return "";
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            char ch = s.charAt(i);
-            if (ch >= '0' && ch <= '9') out.append(ch);
-        }
-        return out.toString();
     }
 }

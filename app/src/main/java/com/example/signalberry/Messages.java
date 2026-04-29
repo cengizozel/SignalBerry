@@ -34,8 +34,8 @@ import okio.ByteString;
 public class Messages extends AppCompatActivity {
 
     private final List<Map<String, String>> all = new ArrayList<>();
-    private final Map<String, Integer> unreadCounts = new HashMap<>();
     private MessagesAdapter adapter;
+    private SharedPreferences prefs;
 
     private EditText search;
     private boolean isLoading = false;
@@ -60,12 +60,13 @@ public class Messages extends AppCompatActivity {
         setTitle("Messages");
 
         handler = new Handler(Looper.getMainLooper());
+        prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
 
         ListView list = findViewById(R.id.list_people);
         search = findViewById(R.id.search);
         ImageButton plus = findViewById(R.id.toolbar_add);
 
-        adapter = new MessagesAdapter(this, all, unreadCounts);
+        adapter = new MessagesAdapter(this, all);
         list.setAdapter(adapter);
 
         list.setOnItemClickListener((parent, view, position, id) -> {
@@ -124,7 +125,7 @@ public class Messages extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         openWebSocket();
-        fetchUnread();
+        refreshUnreadFromLocal();
         applyThreadHintIfAny();
     }
 
@@ -167,11 +168,16 @@ public class Messages extends AppCompatActivity {
                     rows.add(row);
                 }
 
-                // hydrate last message from bridge
+                // hydrate last message + unread count from bridge
                 for (int i = 0; i < rows.size(); i++) {
                     Map<String, String> row = rows.get(i);
-                    String peer = !isEmpty(row.get("number")) ? row.get("number") : row.get("uuid");
+                    String num  = row.get("number");
+                    String uuid = row.get("uuid");
+                    String peer = !isEmpty(num) ? num : uuid;
                     if (isEmpty(peer)) continue;
+
+                    String chatKey = !isEmpty(num) ? digits(num) : (uuid != null ? uuid : "");
+                    long readTs = prefs.getLong("read_ts_" + chatKey, 0);
 
                     try {
                         String url = bridgeBase + "/messages?peer=" + URLEncoder.encode(peer, "UTF-8")
@@ -187,6 +193,14 @@ public class Messages extends AppCompatActivity {
                             row.put("snippet", prefix + text);
                             row.put("time", formatShortTime(ts));
                             row.put("ts", String.valueOf(ts));
+
+                            int unread = 0;
+                            for (int j = 0; j < items.length(); j++) {
+                                JSONObject it = items.getJSONObject(j);
+                                if ("in".equals(it.optString("dir")) && it.optLong("serverTs", 0) > readTs)
+                                    unread++;
+                            }
+                            row.put("unread", String.valueOf(unread));
                         }
                     } catch (Exception ignored) {}
                 }
@@ -270,7 +284,7 @@ public class Messages extends AppCompatActivity {
                 // delayed reconcile (bridge write may lag)
                 handler.postDelayed(new Runnable() {
                     @Override public void run() { refreshOnePeer(srcNum, srcUuid); }
-                }, 400);
+                }, 800);
             }
         }
 
@@ -288,7 +302,7 @@ public class Messages extends AppCompatActivity {
                             updateRowImmediateUI(destNum, destUuid, /*outgoing=*/true, text, ts));
                     handler.postDelayed(new Runnable() {
                         @Override public void run() { refreshOnePeer(destNum, destUuid); }
-                    }, 400);
+                    }, 800);
                 }
             }
         }
@@ -319,6 +333,10 @@ public class Messages extends AppCompatActivity {
             row.put("snippet", snippet);
             row.put("time", time);
             row.put("ts", String.valueOf(ts));
+            if (!outgoing) {
+                int cur = parseSafeInt(row.get("unread"));
+                row.put("unread", String.valueOf(cur + 1));
+            }
         } else {
             Map<String, String> row = new HashMap<>();
             row.put("name", display);
@@ -327,6 +345,7 @@ public class Messages extends AppCompatActivity {
             row.put("snippet", snippet);
             row.put("time", time);
             row.put("ts", String.valueOf(ts));
+            row.put("unread", outgoing ? "0" : "1");
             all.add(row);
         }
         sortByTsDesc(all);
@@ -448,29 +467,22 @@ public class Messages extends AppCompatActivity {
         return "";
     }
 
-    // ---------------- Unread counts ----------------
-    private void fetchUnread() {
-        new Thread(new Runnable() {
-            @Override public void run() {
-                try {
-                    String json = httpGet(bridgeBase + "/unread");
-                    JSONObject obj = new JSONObject(json);
-                    final Map<String, Integer> counts = new HashMap<>();
-                    java.util.Iterator<String> keys = obj.keys();
-                    while (keys.hasNext()) {
-                        String key = keys.next();
-                        counts.put(key, obj.optInt(key, 0));
-                    }
-                    runOnUiThread(new Runnable() {
-                        @Override public void run() {
-                            unreadCounts.clear();
-                            unreadCounts.putAll(counts);
-                            adapter.notifyDataSetChanged();
-                        }
-                    });
-                } catch (Exception ignored) {}
+    // ---------------- Unread counts (local, no network) ----------------
+    private void refreshUnreadFromLocal() {
+        String lastReadPeer = prefs.getString("last_read_peer", "");
+        if (lastReadPeer.isEmpty()) return;
+        for (Map<String, String> row : all) {
+            String num  = row.get("number");
+            String uuid = row.get("uuid");
+            String chatKey = !isEmpty(num) ? digits(num) : safeTrim(uuid);
+            if (lastReadPeer.equals(chatKey)) {
+                row.put("unread", "0");
+                break;
             }
-        }).start();
+        }
+        prefs.edit().remove("last_read_peer").apply();
+        adapter.notifyDataSetChanged();
+        filter(search.getText().toString());
     }
 
     // ---------------- Search filter ----------------
@@ -486,7 +498,7 @@ public class Messages extends AppCompatActivity {
             }
         }
         ((ListView) findViewById(R.id.list_people)).setAdapter(
-                new MessagesAdapter(this, filtered, unreadCounts));
+                new MessagesAdapter(this, filtered));
     }
 
     // ---------------- Utils ----------------
@@ -499,6 +511,11 @@ public class Messages extends AppCompatActivity {
                 return (tb > ta) ? 1 : -1;
             }
         });
+    }
+
+    private static int parseSafeInt(String s) {
+        if (s == null) return 0;
+        try { return Integer.parseInt(s); } catch (Exception e) { return 0; }
     }
 
     private static long parseLongSafe(String s) {
@@ -627,7 +644,7 @@ public class Messages extends AppCompatActivity {
             // optional: schedule a tiny reconcile to pull the last line from the bridge
             handler.postDelayed(new Runnable() {
                 @Override public void run() { refreshOnePeer(num, uuid); }
-            }, 300);
+            }, 800);
         } catch (Exception ignored) {}
     }
 
