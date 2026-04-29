@@ -8,13 +8,11 @@ import android.widget.EditText;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
+import static com.example.signalberry.Utils.*;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.net.URLEncoder;
 
 public class ServerConnect extends AppCompatActivity {
@@ -32,7 +30,7 @@ public class ServerConnect extends AppCompatActivity {
 
         // Prefill from last run
         ipField.setText(prefs.getString("ip", ""));
-        numberField.setText(prefs.getString("number", "")); // previously used number if any
+        numberField.setText(prefs.getString("number", ""));
 
         connectBtn.setOnClickListener(v -> {
             String ip = ipField.getText().toString().trim();
@@ -70,7 +68,6 @@ public class ServerConnect extends AppCompatActivity {
                 runOnUiThread(() -> {
                     connectBtn.setEnabled(true);
                     if (finalOk) {
-                        // Save only on success
                         prefs.edit()
                                 .putString("ip", ip)
                                 .putString("number", finalCanonical != null ? finalCanonical : numberInput)
@@ -85,46 +82,8 @@ public class ServerConnect extends AppCompatActivity {
         });
     }
 
-    // ----- Helpers -----
-
-    private static String normalizeBase(String hostPort) {
-        if (hostPort.equals("localhost:5000") || hostPort.equals("127.0.0.1:5000"))
-            hostPort = "10.0.2.2:5000";
-        if (!hostPort.startsWith("http://") && !hostPort.startsWith("https://"))
-            hostPort = "http://" + hostPort;
-        if (hostPort.endsWith("/")) hostPort = hostPort.substring(0, hostPort.length() - 1);
-        return hostPort;
-    }
-
-    private static int httpCodeGet(String urlStr) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-        c.setConnectTimeout(7000);
-        c.setReadTimeout(7000);
-        c.setRequestMethod("GET");
-        int code = c.getResponseCode();
-        c.disconnect();
-        return code;
-    }
-
-    private static String httpGet(String urlStr) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-        c.setConnectTimeout(7000);
-        c.setReadTimeout(7000);
-        c.setRequestMethod("GET");
-        int code = c.getResponseCode();
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(
-                (code >= 400 ? c.getErrorStream() : c.getInputStream())))) {
-            StringBuilder sb = new StringBuilder();
-            String line; while ((line = br.readLine()) != null) sb.append(line);
-            return sb.toString();
-        } finally {
-            c.disconnect();
-        }
-    }
-
-    // returns the canonical number from API if the user's input matches any account, else null
     private static String findMatchingAccount(String accountsJson, String userInput) {
-        String userDigits = onlyDigits(userInput);
+        String userDigits = digits(userInput);
         if (userDigits.isEmpty()) return null;
 
         try {
@@ -136,56 +95,12 @@ public class ServerConnect extends AppCompatActivity {
                 } else {
                     candidate = arr.optString(i, "");
                 }
-                String candDigits = onlyDigits(candidate);
+                String candDigits = digits(candidate);
                 if (!candDigits.isEmpty() && candDigits.equals(userDigits)) {
-                    return candidate; // return canonical form from server (usually with +)
+                    return candidate;
                 }
             }
         } catch (Exception ignore) {}
         return null;
-    }
-
-    private static String onlyDigits(String s) {
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            char ch = s.charAt(i);
-            if (ch >= '0' && ch <= '9') out.append(ch);
-        }
-        return out.toString();
-    }
-
-    private static String deriveBridgeBase(String ipOrBase) {
-        String base = ipOrBase == null ? "" : ipOrBase.trim();
-
-        // pull out scheme
-        String scheme = "http";
-        if (base.startsWith("https://")) { scheme = "https"; base = base.substring(8); }
-        else if (base.startsWith("http://")) { scheme = "http"; base = base.substring(7); }
-
-        // emulator shortcuts
-        if ("localhost:5000".equals(base) || "127.0.0.1:5000".equals(base)) base = "10.0.2.2:5000";
-
-        // strip any path
-        int slash = base.indexOf('/');
-        if (slash >= 0) base = base.substring(0, slash);
-
-        // extract host (drop port if present)
-        String host = base;
-        int colon = host.indexOf(':');
-        if (colon > 0) host = host.substring(0, colon);
-
-        // detect IP/localhost
-        boolean isIp = host.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")    // IPv4
-                || host.startsWith("[")                              // IPv6 literal
-                || "localhost".equalsIgnoreCase(host)
-                || "10.0.2.2".equals(host);
-
-        if (isIp) {
-            // bridge on fixed 9099 for IP targets
-            return "http://" + host + ":9099";
-        } else {
-            // domain: same scheme, host prefixed with bridge-
-            return scheme + "://bridge-" + host;
-        }
     }
 }

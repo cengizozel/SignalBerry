@@ -8,14 +8,12 @@ import android.widget.ListView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
+import static com.example.signalberry.Utils.*;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
 import java.net.URLEncoder;
-import java.net.URL;
 import java.util.*;
 
 public class NewChat extends AppCompatActivity {
@@ -68,7 +66,7 @@ public class NewChat extends AppCompatActivity {
                 }
 
                 String base  = normalizeBase(host);
-                String bbase = bridgeBase(host);
+                String bbase = deriveBridgeBase(host);
 
                 String contactsJson = httpGet(base + "/v1/contacts/" + URLEncoder.encode(number, "UTF-8"));
                 JSONArray contacts = new JSONArray(contactsJson);
@@ -131,41 +129,6 @@ public class NewChat extends AppCompatActivity {
         });
     }
 
-    // ---- same helpers as Messages (duplicated for simplicity) ----
-    private String chooseDisplayName(JSONObject c) {
-        JSONObject nick = c.optJSONObject("nickname");
-        String nickName = firstNonEmpty(
-                nick != null ? nick.optString("name", null) : null,
-                joinNames(nick != null ? nick.optString("given_name", null) : null,
-                        nick != null ? nick.optString("family_name", null) : null)
-        );
-        if (!isEmpty(nickName)) return nickName;
-
-        String contactName = c.optString("name", "");
-        if (!isEmpty(contactName)) return contactName;
-
-        String profileName = c.optString("profile_name", "");
-        if (!isEmpty(profileName)) return profileName;
-
-        JSONObject profile = c.optJSONObject("profile");
-        String profComposed = joinNames(
-                profile != null ? profile.optString("given_name", null) : null,
-                profile != null ? profile.optString("lastname",   null) : null
-        );
-        if (!isEmpty(profComposed)) return profComposed;
-
-        String username = c.optString("username", "");
-        if (!isEmpty(username)) return "@" + username;
-
-        String number = c.optString("number", "");
-        if (!isEmpty(number)) return number;
-
-        String uuid = c.optString("uuid", "");
-        if (!isEmpty(uuid)) return "Signal user " + shortUuid(uuid);
-
-        return "Unknown";
-    }
-
     private static void filterList(android.widget.SimpleAdapter adapter, ListView listView, List<Map<String,String>> src, String q) {
         q = q.toLowerCase(Locale.US).trim();
         List<Map<String, String>> filtered = new ArrayList<>();
@@ -182,62 +145,5 @@ public class NewChat extends AppCompatActivity {
 
     private void filter(String q) {
         filterList(adapter, (ListView) findViewById(R.id.list_people), rows, q);
-    }
-
-    private static String joinNames(String given, String family) {
-        given = safeTrim(given);
-        family = safeTrim(family);
-        if (!isEmpty(given) && !isEmpty(family)) return given + " " + family;
-        if (!isEmpty(given)) return given;
-        if (!isEmpty(family)) return family;
-        return "";
-    }
-
-    private static String bridgeBase(String hostPort) {
-        String hostOnly = hostPort;
-        if (hostOnly.startsWith("http://"))  hostOnly = hostOnly.substring(7);
-        if (hostOnly.startsWith("https://")) hostOnly = hostOnly.substring(8);
-        if ("localhost:5000".equals(hostOnly) || "127.0.0.1:5000".equals(hostOnly)) hostOnly = "10.0.2.2:5000";
-        int colon = hostOnly.indexOf(':');
-        if (colon > 0) hostOnly = hostOnly.substring(0, colon);
-        return "http://" + hostOnly + ":9099";
-    }
-
-    private static String normalizeBase(String hostPort) {
-        if ("localhost:5000".equals(hostPort) || "127.0.0.1:5000".equals(hostPort))
-            hostPort = "10.0.2.2:5000";
-        if (!hostPort.startsWith("http://") && !hostPort.startsWith("https://"))
-            hostPort = "http://" + hostPort;
-        if (hostPort.endsWith("/")) hostPort = hostPort.substring(0, hostPort.length() - 1);
-        return hostPort;
-    }
-
-    private static String httpGet(String urlStr) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-        c.setConnectTimeout(7000);
-        c.setReadTimeout(7000);
-        c.setRequestMethod("GET");
-        int code = c.getResponseCode();
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(
-                (code >= 400 ? c.getErrorStream() : c.getInputStream())))) {
-            StringBuilder sb = new StringBuilder();
-            String line; while ((line = br.readLine()) != null) sb.append(line);
-            String out = sb.toString();
-            return out.isEmpty() ? "[]" : out;
-        } finally { c.disconnect(); }
-    }
-
-    private static boolean isEmpty(String s) { return s == null || s.trim().isEmpty(); }
-    private static String safeTrim(String s) { return s == null ? null : s.trim(); }
-    private static String firstNonEmpty(String... vals) {
-        for (String v : vals) if (v != null && !v.trim().isEmpty()) return v.trim();
-        return "";
-    }
-    private static String shortUuid(String uuid) {
-        uuid = safeTrim(uuid);
-        if (isEmpty(uuid)) return "";
-        int cut = uuid.indexOf('-');
-        if (cut > 0) return uuid.substring(0, cut);
-        return (uuid.length() > 8) ? uuid.substring(0, 8) : uuid;
     }
 }

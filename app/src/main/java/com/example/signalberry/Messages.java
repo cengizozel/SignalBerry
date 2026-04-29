@@ -15,14 +15,11 @@ import androidx.appcompat.app.AppCompatActivity;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
 import java.net.URLEncoder;
-import java.net.URL;
-import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
+
+import static com.example.signalberry.Utils.*;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -98,7 +95,7 @@ public class Messages extends AppCompatActivity {
         myNumber          = sp.getString("number", "");
 
         restBase  = normalizeBase(host);
-        bridgeBase = normalizeBase(isEmpty(bridgePref) ? makeBridgeBase(host) : bridgePref);
+        bridgeBase = normalizeBase(isEmpty(bridgePref) ? deriveBridgeBase(host) : bridgePref);
 
         if (isEmpty(host) || isEmpty(myNumber)) {
             Toast.makeText(this, "Missing server IP or number", Toast.LENGTH_SHORT).show();
@@ -425,50 +422,6 @@ public class Messages extends AppCompatActivity {
         return -1;
     }
 
-    // ---------------- Naming priority ----------------
-    private String chooseDisplayName(JSONObject c) {
-        JSONObject nick = c.optJSONObject("nickname");
-        String nickName = firstNonEmpty(
-                nick != null ? nick.optString("name", null) : null,
-                joinNames(nick != null ? nick.optString("given_name", null) : null,
-                        nick != null ? nick.optString("family_name", null) : null)
-        );
-        if (!isEmpty(nickName)) return nickName;
-
-        String contactName = c.optString("name", "");
-        if (!isEmpty(contactName)) return contactName;
-
-        String profileName = c.optString("profile_name", "");
-        if (!isEmpty(profileName)) return profileName;
-
-        JSONObject profile = c.optJSONObject("profile");
-        String profComposed = joinNames(
-                profile != null ? profile.optString("given_name", null) : null,
-                profile != null ? profile.optString("lastname",   null) : null
-        );
-        if (!isEmpty(profComposed)) return profComposed;
-
-        String username = c.optString("username", "");
-        if (!isEmpty(username)) return "@" + username;
-
-        String number = c.optString("number", "");
-        if (!isEmpty(number)) return number;
-
-        String uuid = c.optString("uuid", "");
-        if (!isEmpty(uuid)) return "Signal user " + shortUuid(uuid);
-
-        return "Unknown";
-    }
-
-    private static String joinNames(String given, String family) {
-        given = safeTrim(given);
-        family = safeTrim(family);
-        if (!isEmpty(given) && !isEmpty(family)) return given + " " + family;
-        if (!isEmpty(given)) return given;
-        if (!isEmpty(family)) return family;
-        return "";
-    }
-
     // ---------------- Unread counts (local, no network) ----------------
     private void refreshUnreadFromLocal() {
         String lastReadPeer = prefs.getString("last_read_peer", "");
@@ -513,115 +466,6 @@ public class Messages extends AppCompatActivity {
                 return (tb > ta) ? 1 : -1;
             }
         });
-    }
-
-    private static int parseSafeInt(String s) {
-        if (s == null) return 0;
-        try { return Integer.parseInt(s); } catch (Exception e) { return 0; }
-    }
-
-    private static long parseLongSafe(String s) {
-        if (s == null) return 0;
-        try { return Long.parseLong(s); } catch (Exception e) { return 0; }
-    }
-
-    private static String formatShortTime(long tsMillis) {
-        if (tsMillis <= 0) return "";
-        Calendar now = Calendar.getInstance();
-        Calendar t = Calendar.getInstance();
-        t.setTimeInMillis(tsMillis);
-        boolean sameDay = now.get(Calendar.YEAR) == t.get(Calendar.YEAR)
-                && now.get(Calendar.DAY_OF_YEAR) == t.get(Calendar.DAY_OF_YEAR);
-        if (sameDay) return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(tsMillis));
-        return new SimpleDateFormat("MMM d", Locale.getDefault()).format(new Date(tsMillis));
-    }
-
-    private static String normalizeBase(String hostPort) {
-        if ("localhost:5000".equals(hostPort) || "127.0.0.1:5000".equals(hostPort))
-            hostPort = "10.0.2.2:5000";
-        if (!hostPort.startsWith("http://") && !hostPort.startsWith("https://"))
-            hostPort = "http://" + hostPort;
-        if (hostPort.endsWith("/")) hostPort = hostPort.substring(0, hostPort.length() - 1);
-        return hostPort;
-    }
-
-    private static String toWs(String httpBase) {
-        if (httpBase.startsWith("https://")) return "wss://" + httpBase.substring("https://".length());
-        if (httpBase.startsWith("http://"))  return "ws://"  + httpBase.substring("http://".length());
-        return "ws://" + httpBase;
-    }
-
-    private static String makeBridgeBase(String ipOrBase) {
-        String base = ipOrBase == null ? "" : ipOrBase.trim();
-
-        // pull out scheme
-        String scheme = "http";
-        if (base.startsWith("https://")) { scheme = "https"; base = base.substring(8); }
-        else if (base.startsWith("http://")) { scheme = "http"; base = base.substring(7); }
-
-        // emulator shortcuts
-        if ("localhost:5000".equals(base) || "127.0.0.1:5000".equals(base)) base = "10.0.2.2:5000";
-
-        // strip path
-        int slash = base.indexOf('/');
-        if (slash >= 0) base = base.substring(0, slash);
-
-        // host only
-        String host = base;
-        int colon = host.indexOf(':');
-        if (colon > 0) host = host.substring(0, colon);
-
-        boolean isIp = host.matches("\\d+\\.\\d+\\.\\d+\\.\\d+")
-                || host.startsWith("[") || "localhost".equalsIgnoreCase(host) || "10.0.2.2".equals(host);
-
-        if (isIp) {
-            return "http://" + host + ":9099";
-        } else {
-            return scheme + "://bridge-" + host;
-        }
-    }
-
-
-    private static String httpGet(String urlStr) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-        c.setConnectTimeout(7000);
-        c.setReadTimeout(7000);
-        c.setRequestMethod("GET");
-        int code = c.getResponseCode();
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(
-                (code >= 400 ? c.getErrorStream() : c.getInputStream())))) {
-            StringBuilder sb = new StringBuilder();
-            String line; while ((line = br.readLine()) != null) sb.append(line);
-            String out = sb.toString();
-            return out.isEmpty() ? "[]" : out;
-        } finally { c.disconnect(); }
-    }
-
-    private static boolean isEmpty(String s) { return s == null || s.trim().isEmpty(); }
-    private static String safeTrim(String s) { return s == null ? null : s.trim(); }
-    private static String digits(String s) {
-        if (s == null) return "";
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            char ch = s.charAt(i);
-            if (ch >= '0' && ch <= '9') out.append(ch);
-        }
-        return out.toString();
-    }
-    private static String peerKey(String number, String uuid) {
-        String d = digits(number);
-        return !isEmpty(d) ? d : (uuid == null ? "" : uuid);
-    }
-    private static String firstNonEmpty(String... vals) {
-        for (String v : vals) if (v != null && !v.trim().isEmpty()) return v.trim();
-        return "";
-    }
-    private static String shortUuid(String uuid) {
-        uuid = safeTrim(uuid);
-        if (isEmpty(uuid)) return "";
-        int cut = uuid.indexOf('-');
-        if (cut > 0) return uuid.substring(0, cut);
-        return (uuid.length() > 8) ? uuid.substring(0, 8) : uuid;
     }
 
     private void applyThreadHintIfAny() {

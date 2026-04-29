@@ -15,16 +15,12 @@ import androidx.recyclerview.widget.RecyclerView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedOutputStream;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.URLEncoder;
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+
+import static com.example.signalberry.Utils.*;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -529,63 +525,6 @@ public class Chat extends AppCompatActivity {
         } catch (Exception ignored) { }
     }
 
-    // -------------------- utils --------------------
-    private static String normalizeBase(String base) {
-        String b = base == null ? "" : base.trim();
-        if (!b.startsWith("http://") && !b.startsWith("https://")) b = "http://" + b;
-        if (b.endsWith("/")) b = b.substring(0, b.length() - 1);
-        return b;
-    }
-    private static String deriveBridgeBase(String ipOrBase) {
-        String base = ipOrBase.trim();
-        if (base.startsWith("http://"))  base = base.substring(7);
-        else if (base.startsWith("https://")) base = base.substring(8);
-        int c = base.indexOf(':');
-        String host = (c > 0) ? base.substring(0, c) : base;
-        return "http://" + host + ":9099";
-    }
-    private static String toWs(String httpBase) {
-        if (httpBase.startsWith("https://")) return "wss://" + httpBase.substring(8);
-        if (httpBase.startsWith("http://"))  return "ws://"  + httpBase.substring(7);
-        return "ws://" + httpBase;
-    }
-    private static String httpGet(String urlStr) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(8000);
-        c.setRequestMethod("GET");
-        int code = c.getResponseCode();
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(
-                (code >= 400 ? c.getErrorStream() : c.getInputStream())))) {
-            StringBuilder sb = new StringBuilder();
-            String line; while ((line = br.readLine()) != null) sb.append(line);
-            String out = sb.toString();
-            return out.isEmpty() ? "{}" : out;
-        } finally { c.disconnect(); }
-    }
-private static int httpPostJson(String urlStr, String json) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
-        c.setConnectTimeout(8000); c.setReadTimeout(8000);
-        c.setRequestMethod("POST");
-        c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-        c.setDoOutput(true);
-        try (OutputStream os = new BufferedOutputStream(c.getOutputStream())) { os.write(json.getBytes("UTF-8")); }
-        int code = c.getResponseCode();
-        c.disconnect();
-        return code;
-    }
-    private static boolean notEmpty(String s) { return s != null && !s.trim().isEmpty(); }
-    private static boolean isEmpty(String s) { return s == null || s.trim().isEmpty(); }
-    private static String digits(String s) {
-        if (s == null) return "";
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < s.length(); i++) {
-            char ch = s.charAt(i);
-            if (ch >= '0' && ch <= '9') out.append(ch);
-        }
-        return out.toString();
-    }
-    private static boolean safeEq(String a, String b) { return a != null && b != null && a.equalsIgnoreCase(b); }
     private boolean isFromPeer(String srcNum, String srcUuid) {
         boolean byNum  = notEmpty(peerNumber) && digits(srcNum).equals(digits(peerNumber));
         boolean byUuid = notEmpty(peerUuid)   && safeEq(srcUuid, peerUuid);
