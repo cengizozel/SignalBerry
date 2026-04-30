@@ -2,6 +2,12 @@
 
 > **Work in progress.** A Signal messenger client for BlackBerry Android devices.
 
+<p align="center">
+  <img src="screenshots/bb-ml.jpg" width="45%" alt="Message list (light mode)"/>
+  &nbsp;&nbsp;
+  <img src="screenshots/bb-chat.jpg" width="45%" alt="Chat (dark mode)"/>
+</p>
+
 Built on top of [signal-cli](https://github.com/AsamK/signal-cli) via the [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) Docker image, with a companion [SignalBerry Bridge](https://github.com/cengizozel/SignalBerryBridge) for offline message persistence.
 
 ## Architecture
