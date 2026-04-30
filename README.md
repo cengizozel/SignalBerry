@@ -93,5 +93,5 @@ curl http://YOUR_HOST:5000/v1/accounts
 
 - The device running Docker and the Android device must be on the same network (or the Docker ports must be reachable).
 - No TLS or authentication — intended for local / trusted network use only.
-- No background notifications; the app must be open to receive messages in real time. Messages received while closed are delivered via bridge polling on next open.
+- A background service handles real-time delivery and notifications when the app is not in the foreground.
 - Groups, voice/video, disappearing messages, and stickers are not supported.
