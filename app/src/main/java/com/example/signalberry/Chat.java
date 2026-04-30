@@ -81,6 +81,18 @@ public class Chat extends AppCompatActivity {
         debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
     };
 
+    // Typing indicator
+    private android.widget.TextView tvTyping;
+    private boolean typingSent = false;
+    private static final long TYPING_DEBOUNCE_MS = 5000L;
+    private static final long TYPING_HIDE_MS     = 6000L;
+    private final Runnable typingStopRun = () -> {
+        typingSent = false;
+        new Thread(this::sendTypingStop).start();
+    };
+    private final Runnable typingHideRun = () ->
+            runOnUiThread(() -> { if (tvTyping != null) tvTyping.setVisibility(android.view.View.GONE); });
+
     private OkHttpClient wsClient;
     private WebSocket ws;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -132,6 +144,9 @@ public class Chat extends AppCompatActivity {
                 Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
             }
         });
+
+        // Typing indicator
+        tvTyping = findViewById(R.id.tv_typing);
 
         // Top bar
         ImageButton back = findViewById(R.id.btn_back);
@@ -236,6 +251,8 @@ public class Chat extends AppCompatActivity {
             rebuildDisplay();
 
             input.setText("");
+            handler.removeCallbacks(typingStopRun);
+            if (typingSent) { typingSent = false; new Thread(this::sendTypingStop).start(); }
             send.setEnabled(false);
             new Thread(() -> {
                 msgDb.upsert(chatDbKey, "out", "text", text, null, null, null, null,
@@ -269,6 +286,24 @@ public class Chat extends AppCompatActivity {
             }).start();
         });
 
+        input.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable s) {
+                handler.removeCallbacks(typingStopRun);
+                if (s.length() > 0) {
+                    if (!typingSent) {
+                        typingSent = true;
+                        new Thread(Chat.this::sendTypingStart).start();
+                    }
+                    handler.postDelayed(typingStopRun, TYPING_DEBOUNCE_MS);
+                } else if (typingSent) {
+                    typingSent = false;
+                    new Thread(Chat.this::sendTypingStop).start();
+                }
+            }
+        });
+
         loadHistory();
 
         wsClient = new OkHttpClient.Builder()
@@ -298,6 +333,9 @@ public class Chat extends AppCompatActivity {
 
     @Override protected void onPause() {
         super.onPause();
+        handler.removeCallbacks(typingStopRun);
+        handler.removeCallbacks(typingHideRun);
+        if (typingSent) { typingSent = false; new Thread(this::sendTypingStop).start(); }
         closeWebSocket();
         stopBridgePolling();
         prefs.edit().remove("open_chat_peer").apply();
@@ -374,6 +412,27 @@ public class Chat extends AppCompatActivity {
             int code = httpPostJson(url, body.toString());
             return code >= 200 && code < 300;
         } catch (Exception e) { return false; }
+    }
+
+    // -------------------- TYPING INDICATORS --------------------
+    private void sendTypingStart() {
+        try {
+            String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+            if (peer == null) return;
+            JSONObject body = new JSONObject();
+            body.put("recipient", peer);
+            httpPutJson(baseSignal + "/v1/typing-indicator/" + URLEncoder.encode(myNumber, "UTF-8"), body.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private void sendTypingStop() {
+        try {
+            String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+            if (peer == null) return;
+            JSONObject body = new JSONObject();
+            body.put("recipient", peer);
+            httpDeleteJson(baseSignal + "/v1/typing-indicator/" + URLEncoder.encode(myNumber, "UTF-8"), body.toString());
+        } catch (Exception ignored) {}
     }
 
     // -------------------- SEND --------------------
@@ -654,6 +713,24 @@ public class Chat extends AppCompatActivity {
                 }
                 dbg("EDIT-IN found=" + found + " rawItemsTsDump=" + rawItemsTsDump());
                 changed = true;
+            }
+        }
+
+        if (isFromPeer(srcNum, srcUuid)) {
+            JSONObject typing = env.optJSONObject("typingMessage");
+            if (typing != null) {
+                String action = typing.optString("action", "");
+                runOnUiThread(() -> {
+                    handler.removeCallbacks(typingHideRun);
+                    if ("STARTED".equals(action)) {
+                        tvTyping.setText(peerName + " is typing…");
+                        tvTyping.setVisibility(android.view.View.VISIBLE);
+                        handler.postDelayed(typingHideRun, TYPING_HIDE_MS);
+                    } else {
+                        tvTyping.setVisibility(android.view.View.GONE);
+                    }
+                });
+                return false;
             }
         }
 

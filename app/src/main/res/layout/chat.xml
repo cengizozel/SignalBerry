@@ -70,6 +70,20 @@
         android:padding="8dp"
         android:clipToPadding="false" />
 
+    <!-- Typing indicator (shown when peer is typing) -->
+    <TextView
+        android:id="@+id/tv_typing"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="2dp"
+        android:textSize="12sp"
+        android:textStyle="italic"
+        android:textColor="@color/colorTextMuted"
+        android:visibility="gone"/>
+
     <!-- Reply preview (shown when user long-presses a message) -->
     <LinearLayout
         android:id="@+id/reply_preview"

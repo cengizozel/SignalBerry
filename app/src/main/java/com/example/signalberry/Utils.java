@@ -166,6 +166,21 @@ final class Utils {
         return code;
     }
 
+    static int httpPutJson(String urlStr, String json) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(8000);
+        c.setRequestMethod("PUT");
+        c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        c.setDoOutput(true);
+        try (OutputStream os = new BufferedOutputStream(c.getOutputStream())) {
+            os.write(json.getBytes("UTF-8"));
+        }
+        int code = c.getResponseCode();
+        c.disconnect();
+        return code;
+    }
+
     static int httpDeleteJson(String urlStr, String json) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(urlStr).openConnection();
         c.setConnectTimeout(8000);
