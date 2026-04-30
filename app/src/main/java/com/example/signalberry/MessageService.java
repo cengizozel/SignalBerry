@@ -138,8 +138,40 @@ public class MessageService extends Service {
                 }
             }
 
+            // Delete sync from own device
+            if (sync != null) {
+                JSONObject sentMsg = sync.optJSONObject("sentMessage");
+                if (sentMsg != null) {
+                    JSONObject rdSync = sentMsg.optJSONObject("remoteDelete");
+                    if (rdSync != null) {
+                        long targetTs = rdSync.optLong("timestamp", 0);
+                        String destNum  = sentMsg.optString("destinationNumber", "");
+                        String destUuid = sentMsg.optString("destinationUuid", "");
+                        String chatKey  = digits(destNum).isEmpty() ? destUuid : digits(destNum);
+                        if (targetTs > 0 && !isEmpty(chatKey)) {
+                            try { new MessageDatabase(this).deleteByServerTs(chatKey, targetTs); }
+                            catch (Exception ignored) {}
+                        }
+                        return;
+                    }
+                }
+            }
+
             JSONObject data = env.optJSONObject("dataMessage");
             if (data == null) return;
+
+            // Remote delete from peer
+            JSONObject rd = data.optJSONObject("remoteDelete");
+            if (rd != null) {
+                long targetTs = rd.optLong("timestamp", 0);
+                long ts = env.optLong("timestamp", 0);
+                String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
+                if (targetTs > 0 && !isEmpty(senderKey)) {
+                    try { new MessageDatabase(this).deleteByServerTs(senderKey, targetTs); }
+                    catch (Exception ignored) {}
+                }
+                return;
+            }
 
             String text  = data.optString("message", data.optString("text", "")).trim();
             JSONArray atts = data.optJSONArray("attachments");

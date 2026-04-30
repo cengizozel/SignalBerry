@@ -385,6 +385,13 @@ public class Chat extends AppCompatActivity {
             if (data != null) {
                 long ts = env.optLong("timestamp", 0);
 
+                JSONObject rd = data.optJSONObject("remoteDelete");
+                if (rd != null) {
+                    long targetTs = rd.optLong("timestamp", 0);
+                    if (targetTs > 0) deleteMessage(targetTs);
+                    return true;
+                }
+
                 String text = data.optString("message", data.optString("text", "")).trim();
                 JSONArray atts = data.optJSONArray("attachments");
                 boolean hasImage = atts != null && atts.length() > 0;
@@ -442,6 +449,13 @@ public class Chat extends AppCompatActivity {
                 String destNum  = sent.optString("destinationNumber", "");
                 String destUuid = sent.optString("destinationUuid", "");
                 if (isDestThisChat(destNum, destUuid)) {
+                    JSONObject rdSync = sent.optJSONObject("remoteDelete");
+                    if (rdSync != null) {
+                        long targetTs = rdSync.optLong("timestamp", 0);
+                        if (targetTs > 0) deleteMessage(targetTs);
+                        return true;
+                    }
+
                     String msg = sent.optString("message", "").trim();
                     long   ts  = sent.optLong("timestamp", 0);
                     if (!isEmpty(msg)) {
@@ -602,6 +616,17 @@ public class Chat extends AppCompatActivity {
     }
 
     // -------------------- helpers --------------------
+    private void deleteMessage(long targetTs) {
+        msgDb.deleteByServerTs(chatDbKey, targetTs);
+        for (int i = rawItems.size() - 1; i >= 0; i--) {
+            if (rawItems.get(i).serverTs == targetTs) {
+                rawItems.remove(i);
+                break;
+            }
+        }
+        runOnUiThread(this::rebuildDisplay);
+    }
+
     private void bumpLastTs(long ts) {
         // no-op: DB getLastTs() is now the source of truth
     }

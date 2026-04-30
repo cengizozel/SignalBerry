@@ -99,6 +99,11 @@ class MessageDatabase extends SQLiteOpenHelper {
                 new Object[]{newStatus, peerKey, text});
     }
 
+    void deleteByServerTs(String peerKey, long serverTs) {
+        getWritableDatabase().delete(T, "peer_key=? AND server_ts=?",
+                new String[]{peerKey, String.valueOf(serverTs)});
+    }
+
     void upgradeAllOutStatus(String peerKey, int newStatus) {
         getWritableDatabase().execSQL(
                 "UPDATE " + T + " SET status=MAX(status,?) WHERE peer_key=? AND dir='out'",
