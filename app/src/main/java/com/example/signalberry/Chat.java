@@ -637,24 +637,31 @@ public class Chat extends AppCompatActivity {
                                 break;
                             }
                         }
-                        dbg("SYNC-SENT matched=" + matched + " confirmPending ts=" + ts);
-                        msgDb.confirmPending(chatDbKey, msg, ts, ST_SENT);
-                        if (!matched) {
-                            // Check if already in rawItems (sent from this device, confirmed via HTTP).
-                            // If so, just update the server ts. Otherwise it's from another device.
+                        dbg("SYNC-SENT matched=" + matched + " ts=" + ts);
+                        if (matched) {
+                            msgDb.confirmPending(chatDbKey, msg, ts, ST_SENT);
+                        } else {
                             boolean alreadyPresent = false;
+                            long prevTs = 0;
                             for (int i = rawItems.size() - 1; i >= 0; i--) {
                                 MessageItem m = rawItems.get(i);
                                 if ("me".equals(m.from) && msg.equals(m.text)) {
+                                    prevTs = m.serverTs;
                                     m.serverTs = ts;
                                     alreadyPresent = true;
                                     break;
                                 }
                             }
-                            if (!alreadyPresent) {
+                            if (alreadyPresent) {
+                                // Already confirmed via HTTP — just correct the ts in DB, don't insert
+                                if (prevTs > 0 && prevTs != ts) msgDb.updateServerTs(chatDbKey, prevTs, ts);
+                            } else {
+                                // Sent from another device
                                 MessageItem item = new MessageItem("me", msg, ST_SENT);
                                 item.serverTs = ts;
                                 rawItems.add(item);
+                                msgDb.upsert(chatDbKey, "out", "text", msg, null, null, null, null,
+                                        ts, ST_SENT, null, null);
                             }
                         }
                         changed = true;
@@ -1190,6 +1197,15 @@ public class Chat extends AppCompatActivity {
         dbg("applyReaction author=" + authorKey + " emoji=" + emoji + " targetTs=" + targetTs + " found=" + found);
         if (!found) {
             dbg("  rawItems ts dump: " + rawItemsTsDump());
+            // Target not in rawItems (may be from a prior session) — reload so DB reactions show
+            new Thread(() -> {
+                List<MessageItem> fresh = msgDb.getMessages(chatDbKey);
+                runOnUiThread(() -> {
+                    rawItems.clear();
+                    rawItems.addAll(fresh);
+                    rebuildDisplay();
+                });
+            }).start();
         }
     }
 
