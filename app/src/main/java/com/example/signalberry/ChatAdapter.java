@@ -20,10 +20,11 @@ import java.util.List;
 
 class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
-    private static final int VIEW_PEER_TEXT  = 1;
-    private static final int VIEW_ME_TEXT    = 2;
-    private static final int VIEW_PEER_IMAGE = 3;
-    private static final int VIEW_ME_IMAGE   = 4;
+    private static final int VIEW_PEER_TEXT   = 1;
+    private static final int VIEW_ME_TEXT     = 2;
+    private static final int VIEW_PEER_IMAGE  = 3;
+    private static final int VIEW_ME_IMAGE    = 4;
+    private static final int VIEW_DATE_HEADER = 5;
 
     interface OnImageClickListener { void onImageClick(int position); }
     interface OnReplyListener      { void onReply(int position); }
@@ -45,6 +46,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     @Override public int getItemViewType(int position) {
         MessageItem m = data.get(position);
+        if (m.type == MessageItem.TYPE_DATE_HEADER) return VIEW_DATE_HEADER;
         boolean me = "me".equals(m.from);
         if (m.type == MessageItem.TYPE_IMAGE) return me ? VIEW_ME_IMAGE : VIEW_PEER_IMAGE;
         return me ? VIEW_ME_TEXT : VIEW_PEER_TEXT;
@@ -60,6 +62,8 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                 return new PeerTextVH(inf.inflate(R.layout.item_chat_peer, parent, false));
             case VIEW_ME_IMAGE:
                 return new MeImageVH(inf.inflate(R.layout.item_chat_me_image, parent, false));
+            case VIEW_DATE_HEADER:
+                return new DateHeaderVH(inf.inflate(R.layout.item_date_header, parent, false));
             default:
                 return new PeerImageVH(inf.inflate(R.layout.item_chat_peer_image, parent, false));
         }
@@ -67,6 +71,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
         MessageItem m = data.get(pos);
+        if (h instanceof DateHeaderVH) { ((DateHeaderVH) h).bind(m); return; }
         h.itemView.setOnLongClickListener(v -> {
             if (replyListener != null) { replyListener.onReply(pos); return true; }
             return false;
@@ -78,6 +83,13 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     }
 
     @Override public int getItemCount() { return data.size(); }
+
+    // ---- date header VH ----
+    static class DateHeaderVH extends RecyclerView.ViewHolder {
+        final TextView tv;
+        DateHeaderVH(@NonNull View v) { super(v); tv = v.findViewById(R.id.tvDate); }
+        void bind(MessageItem m) { tv.setText(m.dateLabel); }
+    }
 
     // ---- text VHs ----
     static class PeerTextVH extends RecyclerView.ViewHolder {

@@ -1,8 +1,9 @@
 package com.example.signalberry;
 
 class MessageItem {
-    static final int TYPE_TEXT  = 0;
-    static final int TYPE_IMAGE = 1;
+    static final int TYPE_TEXT        = 0;
+    static final int TYPE_IMAGE       = 1;
+    static final int TYPE_DATE_HEADER = 2;
 
     final String from;
     final int type;
@@ -12,10 +13,24 @@ class MessageItem {
     final String caption;
     final String localUri;     // content:// URI for locally-picked images before bridge assigns an ID
     int status;
+    final String dateLabel;    // non-null only for TYPE_DATE_HEADER
 
     long serverTs;      // Signal-level timestamp (ms); 0 if unknown — used for sending quote replies
     String quoteText;   // non-null when this message is a reply to another
     String quoteAuthor; // "me" or "peer", non-null when quoteText != null
+
+    // date separator
+    MessageItem(String dateLabel, boolean isHeader) {
+        this.from = null;
+        this.type = TYPE_DATE_HEADER;
+        this.text = null;
+        this.attachmentId = null;
+        this.mime = null;
+        this.caption = null;
+        this.localUri = null;
+        this.status = 0;
+        this.dateLabel = dateLabel;
+    }
 
     // text
     MessageItem(String from, String text, int status) {
@@ -27,6 +42,7 @@ class MessageItem {
         this.mime = null;
         this.caption = null;
         this.localUri = null;
+        this.dateLabel = null;
     }
 
     // image from bridge (with optional caption)
@@ -39,6 +55,7 @@ class MessageItem {
         this.mime = mime;
         this.caption = caption;
         this.localUri = null;
+        this.dateLabel = null;
     }
 
     // image sent locally — show from device URI immediately
@@ -51,5 +68,6 @@ class MessageItem {
         this.mime = null;
         this.caption = caption;
         this.localUri = localUri;
+        this.dateLabel = null;
     }
 }

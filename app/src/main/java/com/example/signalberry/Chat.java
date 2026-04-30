@@ -59,7 +59,8 @@ public class Chat extends AppCompatActivity {
 
     private RecyclerView recycler;
     private ChatAdapter chatAdapter;
-    private final List<MessageItem> items = new ArrayList<>();
+    private final List<MessageItem> rawItems     = new ArrayList<>(); // business logic, no headers
+    private final List<MessageItem> displayItems = new ArrayList<>(); // adapter list, with date headers
 
     private MessageDatabase msgDb;
 
@@ -111,13 +112,13 @@ public class Chat extends AppCompatActivity {
         LinearLayoutManager lm = new LinearLayoutManager(this);
         lm.setStackFromEnd(true);
         recycler.setLayoutManager(lm);
-        chatAdapter = new ChatAdapter(items, baseSignal, this);
+        chatAdapter = new ChatAdapter(displayItems, baseSignal, this);
         chatAdapter.setOnImageClickListener(pos -> {
             ArrayList<String> sources = new ArrayList<>();
             int viewerPos = 0;
             int imgIndex = 0;
-            for (int i = 0; i < items.size(); i++) {
-                MessageItem m = items.get(i);
+            for (int i = 0; i < displayItems.size(); i++) {
+                MessageItem m = displayItems.get(i);
                 if (m.type == MessageItem.TYPE_IMAGE) {
                     String src = m.localUri != null ? m.localUri
                             : (m.attachmentId != null ? baseSignal + "/v1/attachments/" + m.attachmentId : null);
@@ -141,8 +142,10 @@ public class Chat extends AppCompatActivity {
         android.widget.TextView tvReplyPreview   = findViewById(R.id.tv_reply_preview);
         android.widget.ImageButton btnCancelReply = findViewById(R.id.btn_cancel_reply);
         chatAdapter.setOnReplyListener(pos -> {
-            if (pos < 0 || pos >= items.size()) return;
-            replyToItem = items.get(pos);
+            if (pos < 0 || pos >= displayItems.size()) return;
+            MessageItem tapped = displayItems.get(pos);
+            if (tapped.type == MessageItem.TYPE_DATE_HEADER) return;
+            replyToItem = tapped;
             replyToTs   = replyToItem.serverTs;
             String preview = replyToItem.type == MessageItem.TYPE_IMAGE
                     ? "📷 Photo" : (replyToItem.text != null ? replyToItem.text : "");
@@ -189,9 +192,8 @@ public class Chat extends AppCompatActivity {
                         : (replyItem.text != null ? replyItem.text : "");
                 pending.quoteAuthor = replyItem.from;
             }
-            items.add(pending);
-            chatAdapter.notifyItemInserted(items.size() - 1);
-            recycler.scrollToPosition(items.size() - 1);
+            rawItems.add(pending);
+            rebuildDisplay();
 
             input.setText("");
             send.setEnabled(false);
@@ -201,8 +203,7 @@ public class Chat extends AppCompatActivity {
                     send.setEnabled(true);
                     if (ok) {
                         markNewestMyPendingTo(ST_SENT);
-                        chatAdapter.notifyDataSetChanged();
-                        recycler.scrollToPosition(items.size() - 1);
+                        rebuildDisplay();
                     } else {
                         Toast.makeText(Chat.this, "Send failed", Toast.LENGTH_SHORT).show();
                     }
@@ -274,9 +275,8 @@ public class Chat extends AppCompatActivity {
                         String cap = caption.isEmpty() ? null : caption;
                         MessageItem img = new MessageItem("me", uriStr, cap, ST_SENT, true);
                         img.serverTs = now;
-                        items.add(img);
-                        chatAdapter.notifyItemInserted(items.size() - 1);
-                        recycler.scrollToPosition(items.size() - 1);
+                        rawItems.add(img);
+                        rebuildDisplay();
                         // write image to DB immediately (bridge doesn't store images)
                         msgDb.upsert(chatDbKey, "out", "image",
                                 null, null, mime, cap, uriStr, now, ST_SENT, null, null);
@@ -369,10 +369,7 @@ public class Chat extends AppCompatActivity {
                 if (handleEnvelope(new JSONObject(p))) changed = true;
             }
         } catch (Exception ignored) {}
-        if (changed) runOnUiThread(() -> {
-            chatAdapter.notifyDataSetChanged();
-            if (!items.isEmpty()) recycler.scrollToPosition(items.size() - 1);
-        });
+        if (changed) runOnUiThread(this::rebuildDisplay);
     }
 
     private boolean handleEnvelope(JSONObject obj) {
@@ -407,7 +404,7 @@ public class Chat extends AppCompatActivity {
                     item.serverTs    = ts;
                     item.quoteText   = quoteText;
                     item.quoteAuthor = quoteAuthor;
-                    items.add(item);
+                    rawItems.add(item);
                     msgDb.upsert(chatDbKey, "in", "text", text, null, null, null, null,
                             ts, ST_DELIVERED, quoteText, quoteAuthor);
                     changed = true;
@@ -426,7 +423,7 @@ public class Chat extends AppCompatActivity {
                             item.serverTs    = ts;
                             item.quoteText   = quoteText;
                             item.quoteAuthor = quoteAuthor;
-                            items.add(item);
+                            rawItems.add(item);
                             msgDb.upsert(chatDbKey, "in", "image", null, cid, mime,
                                     isEmpty(text) ? null : text, null,
                                     ts, ST_DELIVERED, quoteText, quoteAuthor);
@@ -464,7 +461,7 @@ public class Chat extends AppCompatActivity {
                             if (!isEmpty(cid) && mime != null && mime.startsWith("image/")) {
                                 MessageItem item = new MessageItem("me", cid, mime, null, ST_SENT);
                                 item.serverTs = ts;
-                                items.add(item);
+                                rawItems.add(item);
                                 msgDb.upsert(chatDbKey, "out", "image", null, cid, mime,
                                         null, null, ts, ST_SENT, null, null);
                                 changed = true;
@@ -546,18 +543,62 @@ public class Chat extends AppCompatActivity {
                     runOnUiThread(() -> {
                         // preserve in-memory PENDING items (not yet in DB)
                         List<MessageItem> pending = new ArrayList<>();
-                        for (MessageItem m : items)
+                        for (MessageItem m : rawItems)
                             if (m.status == ST_PENDING) pending.add(m);
 
-                        items.clear();
-                        items.addAll(fresh);
-                        items.addAll(pending);
-                        chatAdapter.notifyDataSetChanged();
-                        if (!items.isEmpty()) recycler.scrollToPosition(items.size() - 1);
+                        rawItems.clear();
+                        rawItems.addAll(fresh);
+                        rawItems.addAll(pending);
+                        rebuildDisplay();
                     });
                 }
             } catch (Exception ignored) {}
         }).start();
+    }
+
+    // -------------------- display rebuild (inserts date headers) --------------------
+    private void rebuildDisplay() {
+        displayItems.clear();
+        String lastDayKey = null;
+        for (MessageItem m : rawItems) {
+            long ts = m.serverTs > 0 ? m.serverTs : System.currentTimeMillis();
+            String dk = dayKey(ts);
+            if (!dk.equals(lastDayKey)) {
+                displayItems.add(new MessageItem(dateLabel(ts), true));
+                lastDayKey = dk;
+            }
+            displayItems.add(m);
+        }
+        chatAdapter.notifyDataSetChanged();
+        if (!displayItems.isEmpty()) recycler.scrollToPosition(displayItems.size() - 1);
+    }
+
+    private static String dayKey(long ts) {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.setTimeInMillis(ts);
+        return c.get(java.util.Calendar.YEAR) + "-" + c.get(java.util.Calendar.DAY_OF_YEAR);
+    }
+
+    private static String dateLabel(long ts) {
+        java.util.Calendar msg  = java.util.Calendar.getInstance();
+        java.util.Calendar now  = java.util.Calendar.getInstance();
+        java.util.Calendar yday = java.util.Calendar.getInstance();
+        msg.setTimeInMillis(ts);
+        yday.add(java.util.Calendar.DAY_OF_YEAR, -1);
+        if (sameDay(msg, now))  return "Today";
+        if (sameDay(msg, yday)) return "Yesterday";
+        java.util.Calendar week = java.util.Calendar.getInstance();
+        week.add(java.util.Calendar.DAY_OF_YEAR, -6);
+        if (msg.after(week))
+            return new java.text.SimpleDateFormat("EEEE", java.util.Locale.getDefault()).format(new java.util.Date(ts));
+        if (msg.get(java.util.Calendar.YEAR) == now.get(java.util.Calendar.YEAR))
+            return new java.text.SimpleDateFormat("MMMM d", java.util.Locale.getDefault()).format(new java.util.Date(ts));
+        return new java.text.SimpleDateFormat("MMMM d, yyyy", java.util.Locale.getDefault()).format(new java.util.Date(ts));
+    }
+
+    private static boolean sameDay(java.util.Calendar a, java.util.Calendar b) {
+        return a.get(java.util.Calendar.YEAR) == b.get(java.util.Calendar.YEAR)
+                && a.get(java.util.Calendar.DAY_OF_YEAR) == b.get(java.util.Calendar.DAY_OF_YEAR);
     }
 
     // -------------------- helpers --------------------
@@ -566,8 +607,8 @@ public class Chat extends AppCompatActivity {
     }
 
     private boolean markNewestMyPendingTo(int newStatus) {
-        for (int i = items.size() - 1; i >= 0; i--) {
-            MessageItem m = items.get(i);
+        for (int i = rawItems.size() - 1; i >= 0; i--) {
+            MessageItem m = rawItems.get(i);
             if ("me".equals(m.from) && m.status == ST_PENDING) {
                 m.status = newStatus;
                 return true;
@@ -578,8 +619,8 @@ public class Chat extends AppCompatActivity {
 
     private void markNewestPendingWithTextTo(String text, int newStatus) {
         if (isEmpty(text)) return;
-        for (int i = items.size() - 1; i >= 0; i--) {
-            MessageItem m = items.get(i);
+        for (int i = rawItems.size() - 1; i >= 0; i--) {
+            MessageItem m = rawItems.get(i);
             if ("me".equals(m.from) && m.status == ST_PENDING && text.equals(m.text)) {
                 m.status = newStatus;
                 return;
@@ -588,8 +629,8 @@ public class Chat extends AppCompatActivity {
     }
 
     private boolean upgradeNewestMyStatusToAtLeast(int newStatus) {
-        for (int i = items.size() - 1; i >= 0; i--) {
-            MessageItem m = items.get(i);
+        for (int i = rawItems.size() - 1; i >= 0; i--) {
+            MessageItem m = rawItems.get(i);
             if ("me".equals(m.from) && m.status < newStatus) {
                 m.status = newStatus;
                 return true;
@@ -600,9 +641,9 @@ public class Chat extends AppCompatActivity {
 
     private void backfillServerTs(String from, String text, long ts) {
         if (isEmpty(text) || ts <= 0) return;
-        int limit = "peer".equals(from) ? Math.max(0, items.size() - 50) : 0;
-        for (int i = items.size() - 1; i >= limit; i--) {
-            MessageItem m = items.get(i);
+        int limit = "peer".equals(from) ? Math.max(0, rawItems.size() - 50) : 0;
+        for (int i = rawItems.size() - 1; i >= limit; i--) {
+            MessageItem m = rawItems.get(i);
             if (from.equals(m.from) && m.type == MessageItem.TYPE_TEXT
                     && text.equals(m.text) && m.serverTs == 0) {
                 m.serverTs = ts;
@@ -616,10 +657,9 @@ public class Chat extends AppCompatActivity {
         // Load from DB
         List<MessageItem> stored = msgDb.getMessages(chatDbKey);
         if (!stored.isEmpty()) {
-            items.clear();
-            items.addAll(stored);
-            chatAdapter.notifyDataSetChanged();
-            recycler.scrollToPosition(items.size() - 1);
+            rawItems.clear();
+            rawItems.addAll(stored);
+            rebuildDisplay();
             return;
         }
 
@@ -629,7 +669,7 @@ public class Chat extends AppCompatActivity {
             String raw = prefs.getString(histKey, "[]");
             JSONArray arr = new JSONArray(raw);
             if (arr.length() == 0) return;
-            items.clear();
+            rawItems.clear();
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject o   = arr.getJSONObject(i);
                 String from    = o.optString("from", "peer");
@@ -665,10 +705,9 @@ public class Chat extends AppCompatActivity {
                 item.serverTs    = sTs;
                 item.quoteText   = qt.isEmpty() ? null : qt;
                 item.quoteAuthor = qa.isEmpty() ? null : qa;
-                items.add(item);
+                rawItems.add(item);
             }
-            chatAdapter.notifyDataSetChanged();
-            if (!items.isEmpty()) recycler.scrollToPosition(items.size() - 1);
+            rebuildDisplay();
             // clean up old pref after migration
             prefs.edit().remove(histKey).apply();
         } catch (Exception ignored) {}
