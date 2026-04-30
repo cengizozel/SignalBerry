@@ -326,6 +326,8 @@ public class Chat extends AppCompatActivity {
 
         loadHistory();
 
+        input.requestFocus();
+
         wsClient = new OkHttpClient.Builder()
                 .readTimeout(0, TimeUnit.MILLISECONDS)
                 .pingInterval(25, TimeUnit.SECONDS)
@@ -344,6 +346,10 @@ public class Chat extends AppCompatActivity {
             openWebSocket();
             startBridgePolling();
             fetchFromBridgeOnce();
+        }
+        if (!selectionMode) {
+            EditText inputField = findViewById(R.id.input_message);
+            inputField.requestFocus();
         }
         String chatKey = chatDbKey;
         prefs.edit()
