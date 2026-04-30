@@ -229,6 +229,14 @@ public class Chat extends AppCompatActivity {
         ImageButton attach = findViewById(R.id.btn_attach);
         ImageButton send   = findViewById(R.id.btn_send);
 
+        input.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND) {
+                send.performClick();
+                return true;
+            }
+            return false;
+        });
+
         attach.setOnClickListener(v -> {
             Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
             pick.setType("*/*");

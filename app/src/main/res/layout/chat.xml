@@ -186,6 +186,7 @@
             android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1"
             android:hint="Message" android:singleLine="true"
+            android:imeOptions="actionSend"
             android:textColor="#222222"
             android:textColorHint="@color/colorTextMuted"
             android:background="@android:drawable/edit_text"
