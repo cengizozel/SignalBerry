@@ -1,6 +1,6 @@
 # SignalBerry
 
-> **Work in progress.** A Signal messenger client for BlackBerry Android devices.
+A Signal messenger client for BlackBerry Android devices.
 
 <p align="center">
   <img src="screenshots/bb-ml.jpg" width="45%" alt="Message list (light mode)"/>
@@ -29,19 +29,14 @@ The Android app connects directly to signal-cli-rest-api for real-time messages 
 
 ## Features
 
-- **Realtime messaging** — WebSocket receive + send via `/v2/send`
-- **Offline catch-up** — bridge polling delivers messages missed while the app was closed
+- **Realtime messaging** — WebSocket receive + send; bridge polling catches up missed messages
 - **Message status** — 🕒 pending → ✓ sent → ✓✓ delivered → ✓✓ read
 - **Replies** — long-press a message to quote-reply
-- **Emoji reactions** — long-press to react; reactions sync across devices
+- **Emoji reactions** — react to messages; syncs across devices
 - **Images** — send from gallery, receive and view full-screen
-- **Delete messages** — long-press → Delete, or multi-select and bulk delete; deletions sync from other devices
-- **Date separators** — messages grouped by day in the chat view
-- **Light / dark mode** — toggle in Settings; persists across launches
-- **Conversation list** — shows latest message snippet, timestamp, and unread badge per contact
+- **Light / dark mode** — toggle in Settings
+- **Conversation list** — snippet, timestamp, and unread badge per contact
 - **Search** — filter contacts in the message list
-- **New chat** — start a conversation with any contact from your Signal account
-- **Debug log** — toggleable overlay showing live internal logs (Settings → Debug log)
 
 ## Setup
 
