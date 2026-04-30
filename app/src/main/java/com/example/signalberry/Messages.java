@@ -419,6 +419,8 @@ public class Messages extends AppCompatActivity {
             if (targetTs > 0 && !isEmpty(newText) && (!isEmpty(srcNum) || !isEmpty(srcUuid))) {
                 String srcKey = peerKey(srcNum, srcUuid);
                 msgDb.applyEdit(srcKey, targetTs, newText, editEnvTs);
+                final String fn = srcNum, fu = srcUuid;
+                runOnUiThread(() -> refreshOnePeer(fn, fu));
             }
         }
 
@@ -440,6 +442,8 @@ public class Messages extends AppCompatActivity {
                     if (targetTs > 0 && !isEmpty(newText)) {
                         String destKey = peerKey(destNum, destUuid);
                         msgDb.applyEdit(destKey, targetTs, newText, editEnvTs);
+                        final String fn = destNum, fu = destUuid;
+                        runOnUiThread(() -> refreshOnePeer(fn, fu));
                     }
                 }
 
