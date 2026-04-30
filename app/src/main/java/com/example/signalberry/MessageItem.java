@@ -7,18 +7,20 @@ class MessageItem {
 
     final String from;
     final int type;
-    final String text;
+    String text;
     final String attachmentId;
     final String mime;
-    final String caption;
+    String caption;
     final String localUri;     // content:// URI for locally-picked images before bridge assigns an ID
     int status;
     final String dateLabel;    // non-null only for TYPE_DATE_HEADER
 
     long serverTs;      // Signal-level timestamp (ms); 0 if unknown — used for sending quote replies
+    long lastEditTs;    // timestamp of the most recent edit (chained); 0 if never edited
     String quoteText;   // non-null when this message is a reply to another
     String quoteAuthor; // "me" or "peer", non-null when quoteText != null
     java.util.Map<String, String> reactions; // authorKey → emoji, null if none
+    String editHistory; // JSON array of previous texts (oldest first), null if never edited
 
     // date separator
     MessageItem(String dateLabel, boolean isHeader) {

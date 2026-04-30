@@ -115,7 +115,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvReactions = v.findViewById(R.id.tvReactions);
         }
         void bind(MessageItem m) {
-            tvMessage.setText(m.text == null ? "" : m.text);
+            tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
             bindQuote(m, quoteBlock, quoteLine, tvQuote, false);
             bindReactions(m, tvReactions);
         }
@@ -135,7 +135,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvReactions = v.findViewById(R.id.tvReactions);
         }
         void bind(MessageItem m) {
-            tvMessage.setText(m.text == null ? "" : m.text);
+            tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
             tvStatus.setText(statusMark(m.status));
             bindQuote(m, quoteBlock, quoteLine, tvQuote, true);
             bindReactions(m, tvReactions);
@@ -230,6 +230,19 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         } else {
             block.setVisibility(View.GONE);
         }
+    }
+
+    private static android.text.SpannableString editedSpan(String text, String editHistory) {
+        if (editHistory == null) return new android.text.SpannableString(text);
+        String full = text + " (edited)";
+        android.text.SpannableString s = new android.text.SpannableString(full);
+        s.setSpan(new android.text.style.ForegroundColorSpan(0xFF888888),
+                text.length(), full.length(),
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new android.text.style.RelativeSizeSpan(0.8f),
+                text.length(), full.length(),
+                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return s;
     }
 
     private static String statusMark(int st) {

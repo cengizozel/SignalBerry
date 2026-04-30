@@ -587,6 +587,42 @@ public class Chat extends AppCompatActivity {
             }
         }
 
+        // Incoming edit from peer or sync echo of own edit from another device
+        long editEnvelopeTs = env.optLong("timestamp", 0);
+        JSONObject editMsg = env.optJSONObject("editMessage");
+        if (editMsg == null && sync != null) {
+            JSONObject sentMsg = sync.optJSONObject("sentMessage");
+            if (sentMsg != null) {
+                editMsg = sentMsg.optJSONObject("editMessage");
+                if (editMsg != null && editEnvelopeTs == 0)
+                    editEnvelopeTs = sentMsg.optLong("timestamp", 0);
+            }
+        }
+        if (editMsg != null) {
+            dbg("EDIT-IN " + editMsg.toString().substring(0, Math.min(200, editMsg.toString().length())));
+            long targetTs = editMsg.optLong("targetSentTimestamp", 0);
+            JSONObject editData = editMsg.optJSONObject("dataMessage");
+            String newText = editData != null ? editData.optString("message", "").trim() : "";
+            dbg("EDIT-IN targetTs=" + targetTs + " editEnvelopeTs=" + editEnvelopeTs + " newText=" + newText);
+            if (targetTs > 0 && !isEmpty(newText)) {
+                msgDb.applyEdit(chatDbKey, targetTs, newText, editEnvelopeTs);
+                boolean found = false;
+                for (MessageItem it : rawItems) {
+                    if (it.serverTs == targetTs || (it.lastEditTs != 0 && it.lastEditTs == targetTs)) {
+                        it.editHistory = it.editHistory == null
+                                ? "[\"" + (it.text == null ? "" : it.text.replace("\"", "\\\"")) + "\"]"
+                                : appendToHistoryJson(it.editHistory, it.text == null ? "" : it.text);
+                        it.text = newText;
+                        it.lastEditTs = editEnvelopeTs;
+                        found = true;
+                        break;
+                    }
+                }
+                dbg("EDIT-IN found=" + found + " rawItemsTsDump=" + rawItemsTsDump());
+                changed = true;
+            }
+        }
+
         JSONObject receipt = env.optJSONObject("receiptMessage");
         if (receipt != null) {
             dbg("RECEIPT json=" + receipt);
@@ -763,6 +799,12 @@ public class Chat extends AppCompatActivity {
         emojiRow.setGravity(android.view.Gravity.CENTER);
         emojiRow.setPadding(16, 24, 16, 8);
 
+        android.widget.LinearLayout container = new android.widget.LinearLayout(this);
+        container.setOrientation(android.widget.LinearLayout.VERTICAL);
+        container.addView(emojiRow);
+
+        boolean canEdit = "me".equals(m.from) && m.type == MessageItem.TYPE_TEXT && m.serverTs > 0;
+
         android.app.AlertDialog[] ref = {null};
         for (String e : emojis) {
             android.widget.TextView tv = new android.widget.TextView(this);
@@ -777,8 +819,35 @@ public class Chat extends AppCompatActivity {
             });
             emojiRow.addView(tv);
         }
+
+        if (canEdit) {
+            android.widget.LinearLayout actionRow = new android.widget.LinearLayout(this);
+            actionRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            actionRow.setGravity(android.view.Gravity.CENTER);
+            actionRow.setPadding(16, 4, 16, 16);
+
+            android.widget.Button btnEdit = new android.widget.Button(this);
+            btnEdit.setText("✏ Edit");
+            btnEdit.setOnClickListener(v -> {
+                if (ref[0] != null) ref[0].dismiss();
+                showEditDialog(m);
+            });
+            actionRow.addView(btnEdit);
+
+            if (m.editHistory != null) {
+                android.widget.Button btnHist = new android.widget.Button(this);
+                btnHist.setText("📋 History");
+                btnHist.setOnClickListener(v -> {
+                    if (ref[0] != null) ref[0].dismiss();
+                    showEditHistory(m);
+                });
+                actionRow.addView(btnHist);
+            }
+            container.addView(actionRow);
+        }
+
         ref[0] = new android.app.AlertDialog.Builder(this)
-                .setView(emojiRow)
+                .setView(container)
                 .setPositiveButton("Delete", (d, w) -> confirmDeleteSingle(m.serverTs))
                 .setNeutralButton("Reply", (d, w) -> doReply(displayPos))
                 .setNegativeButton("Select", (d, w) -> enterSelectionMode(m.serverTs))
@@ -786,6 +855,106 @@ public class Chat extends AppCompatActivity {
         // Tint delete button red after show
         ref[0].getButton(android.app.AlertDialog.BUTTON_POSITIVE)
                 .setTextColor(0xFFD32F2F);
+    }
+
+    private void showEditDialog(MessageItem m) {
+        android.widget.EditText input = new android.widget.EditText(this);
+        input.setText(m.text);
+        input.setSelection(m.text == null ? 0 : m.text.length());
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Edit message")
+                .setView(input)
+                .setPositiveButton("Save", (d, w) -> {
+                    String newText = input.getText().toString().trim();
+                    if (!newText.isEmpty() && !newText.equals(m.text)) sendEdit(m, newText);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showEditHistory(MessageItem m) {
+        try {
+            org.json.JSONArray hist = new org.json.JSONArray(m.editHistory);
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < hist.length(); i++) {
+                sb.append("v").append(i + 1).append(": ").append(hist.getString(i));
+                if (i < hist.length() - 1) sb.append("\n\n");
+            }
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("Edit history")
+                    .setMessage(sb.toString())
+                    .setPositiveButton("OK", null)
+                    .show();
+        } catch (Exception ignored) {}
+    }
+
+    private void sendEdit(MessageItem original, String newText) {
+        new Thread(() -> {
+            try {
+                String url = baseSignal + "/v2/send";
+                org.json.JSONObject body = new org.json.JSONObject();
+                body.put("message", newText);
+                body.put("number", myNumber);
+                org.json.JSONArray rcpts = new org.json.JSONArray();
+                if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
+                body.put("recipients", rcpts);
+                long editTs = original.lastEditTs > 0 ? original.lastEditTs : original.serverTs;
+                body.put("edit_timestamp", editTs);
+                dbg("EDIT-SEND editTs=" + editTs + " newText=" + newText);
+                // Read response body to capture the new edit timestamp
+                long newEditTs = 0;
+                int code;
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(8000);
+                    c.setRequestMethod("POST");
+                    c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                    c.setDoOutput(true);
+                    try (java.io.OutputStream os = new java.io.BufferedOutputStream(c.getOutputStream())) {
+                        os.write(body.toString().getBytes("UTF-8"));
+                    }
+                    code = c.getResponseCode();
+                    if (code >= 200 && code < 300) {
+                        try (java.io.InputStream is = c.getInputStream();
+                             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
+                            byte[] buf = new byte[1024]; int n;
+                            while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+                            org.json.JSONObject resp = new org.json.JSONObject(bos.toString("UTF-8"));
+                            newEditTs = resp.optLong("timestamp", 0);
+                        }
+                    }
+                    c.disconnect();
+                } catch (Exception e) { code = 0; }
+                final boolean ok = code >= 200 && code < 300;
+                final long capturedEditTs = newEditTs;
+                dbg("EDIT-SEND code=" + code + " ok=" + ok + " newEditTs=" + capturedEditTs);
+                runOnUiThread(() -> {
+                    if (ok) {
+                        applyEditLocally(original, newText, capturedEditTs);
+                    } else {
+                        Toast.makeText(Chat.this, "Edit failed", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            } catch (Exception ignored) {}
+        }).start();
+    }
+
+    private void applyEditLocally(MessageItem m, String newText, long newEditTs) {
+        msgDb.applyEdit(chatDbKey, m.lastEditTs > 0 ? m.lastEditTs : m.serverTs, newText, newEditTs);
+        m.editHistory = m.editHistory == null ? "[\"" + (m.text == null ? "" : m.text.replace("\"", "\\\"")) + "\"]"
+                : appendToHistoryJson(m.editHistory, m.text == null ? "" : m.text);
+        m.text = newText;
+        m.lastEditTs = newEditTs;
+        rebuildDisplay();
+    }
+
+    private static String appendToHistoryJson(String histJson, String entry) {
+        try {
+            org.json.JSONArray arr = new org.json.JSONArray(histJson);
+            arr.put(entry);
+            return arr.toString();
+        } catch (Exception e) { return histJson; }
     }
 
     private void enterSelectionMode(long firstTs) {

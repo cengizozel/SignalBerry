@@ -409,6 +409,19 @@ public class Messages extends AppCompatActivity {
             }
         }
 
+        // Incoming edit from peer
+        JSONObject editMsgIn = env.optJSONObject("editMessage");
+        if (editMsgIn != null && data == null) {
+            long targetTs = editMsgIn.optLong("targetSentTimestamp", 0);
+            long editEnvTs = env.optLong("timestamp", 0);
+            JSONObject editData = editMsgIn.optJSONObject("dataMessage");
+            String newText = editData != null ? editData.optString("message", "").trim() : "";
+            if (targetTs > 0 && !isEmpty(newText) && (!isEmpty(srcNum) || !isEmpty(srcUuid))) {
+                String srcKey = peerKey(srcNum, srcUuid);
+                msgDb.applyEdit(srcKey, targetTs, newText, editEnvTs);
+            }
+        }
+
         // Sent echo (you sent from another device) → write to DB + optimistic UI update
         JSONObject sync = env.optJSONObject("syncMessage");
         if (sync != null) {
@@ -416,9 +429,23 @@ public class Messages extends AppCompatActivity {
             if (sent != null) {
                 String destNum  = sent.optString("destinationNumber", "");
                 String destUuid = sent.optString("destinationUuid", "");
+
+                // Edit sync from another device
+                JSONObject editMsgSync = sent.optJSONObject("editMessage");
+                if (editMsgSync != null) {
+                    long targetTs = editMsgSync.optLong("targetSentTimestamp", 0);
+                    long editEnvTs = sent.optLong("timestamp", 0);
+                    JSONObject editData = editMsgSync.optJSONObject("dataMessage");
+                    String newText = editData != null ? editData.optString("message", "").trim() : "";
+                    if (targetTs > 0 && !isEmpty(newText)) {
+                        String destKey = peerKey(destNum, destUuid);
+                        msgDb.applyEdit(destKey, targetTs, newText, editEnvTs);
+                    }
+                }
+
                 String text     = sent.optString("message", "").trim();
                 long ts         = sent.optLong("timestamp", System.currentTimeMillis());
-                if (!isEmpty(text)) {
+                if (!isEmpty(text) && editMsgSync == null) {
                     String destKey = peerKey(destNum, destUuid);
                     msgDb.upsert(destKey, "out", "text", text, null, null, null, null,
                             ts, Chat.ST_SENT, null, null);

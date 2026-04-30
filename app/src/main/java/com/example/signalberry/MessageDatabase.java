@@ -20,7 +20,7 @@ import static com.example.signalberry.Utils.*;
 class MessageDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME    = "signalberry.db";
-    private static final int    DB_VERSION = 2;
+    private static final int    DB_VERSION = 4;
     private static final String T          = "messages";
 
     MessageDatabase(Context ctx) {
@@ -41,7 +41,9 @@ class MessageDatabase extends SQLiteOpenHelper {
                 "server_ts    INTEGER NOT NULL DEFAULT 0," +
                 "status       INTEGER NOT NULL DEFAULT 1," +
                 "quote_text   TEXT," +
-                "quote_author TEXT" +
+                "quote_author TEXT," +
+                "edit_history TEXT," +
+                "last_edit_ts INTEGER NOT NULL DEFAULT 0" +
                 ")");
         db.execSQL("CREATE INDEX idx_peer_ts ON " + T + "(peer_key, server_ts)");
     }
@@ -49,6 +51,12 @@ class MessageDatabase extends SQLiteOpenHelper {
     @Override public void onUpgrade(SQLiteDatabase db, int old, int nw) {
         if (old < 2) {
             db.execSQL("ALTER TABLE " + T + " ADD COLUMN reactions TEXT");
+        }
+        if (old < 3) {
+            db.execSQL("ALTER TABLE " + T + " ADD COLUMN edit_history TEXT");
+        }
+        if (old < 4) {
+            db.execSQL("ALTER TABLE " + T + " ADD COLUMN last_edit_ts INTEGER NOT NULL DEFAULT 0");
         }
     }
 
@@ -67,14 +75,21 @@ class MessageDatabase extends SQLiteOpenHelper {
             Cursor c = db.rawQuery(
                     "SELECT id FROM " + T + " WHERE peer_key=? AND dir=? AND server_ts=? AND text=?",
                     new String[]{peerKey, dir, String.valueOf(serverTs), text});
-            boolean exists = c.moveToFirst();
+            boolean exactMatch = c.moveToFirst();
             c.close();
-            if (exists) {
+            if (exactMatch) {
                 // bump status upward only, but never resurrect a deleted row
                 db.execSQL("UPDATE " + T + " SET status=MAX(status,?) WHERE peer_key=? AND dir=? AND server_ts=? AND status!=?",
                         new Object[]{status, peerKey, dir, serverTs, ST_DELETED});
                 return -1;
             }
+            // A row with this ts but different text exists (edited message) — don't re-insert stale text
+            c = db.rawQuery(
+                    "SELECT id FROM " + T + " WHERE peer_key=? AND dir=? AND server_ts=?",
+                    new String[]{peerKey, dir, String.valueOf(serverTs)});
+            boolean tsExists = c.moveToFirst();
+            c.close();
+            if (tsExists) return -1;
         } else if ("image".equals(msgType) && !isEmpty(attId)) {
             Cursor c = db.rawQuery("SELECT id FROM " + T + " WHERE att_id=?", new String[]{attId});
             boolean exists = c.moveToFirst();
@@ -106,14 +121,23 @@ class MessageDatabase extends SQLiteOpenHelper {
     }
 
     void confirmPending(String peerKey, String text, long realTs, int newStatus) {
+        SQLiteDatabase db = getWritableDatabase();
         ContentValues cv = new ContentValues();
         cv.put("server_ts", realTs);
         cv.put("status", newStatus);
-        int rows = getWritableDatabase().update(T, cv,
+        int rows = db.update(T, cv,
                 "peer_key=? AND dir='out' AND status=0 AND text=?",
                 new String[]{peerKey, text});
         if (rows == 0) {
-            upsert(peerKey, "out", "text", text, null, null, null, null, realTs, newStatus, null, null);
+            // Don't insert if a row already exists with this ts (could be edited message)
+            Cursor c = db.rawQuery(
+                    "SELECT id FROM " + T + " WHERE peer_key=? AND dir='out' AND server_ts=?",
+                    new String[]{peerKey, String.valueOf(realTs)});
+            boolean exists = c.moveToFirst();
+            c.close();
+            if (!exists) {
+                upsert(peerKey, "out", "text", text, null, null, null, null, realTs, newStatus, null, null);
+            }
         }
     }
 
@@ -247,6 +271,35 @@ class MessageDatabase extends SQLiteOpenHelper {
                 if (!reactions.isEmpty()) item.reactions = reactions;
             } catch (Exception ignored) {}
         }
+        int ehi = c.getColumnIndex("edit_history");
+        if (ehi >= 0 && !c.isNull(ehi)) {
+            String eh = c.getString(ehi);
+            if (eh != null && !eh.equals("[]")) item.editHistory = eh;
+        }
+        int leti = c.getColumnIndex("last_edit_ts");
+        if (leti >= 0) item.lastEditTs = c.getLong(leti);
         return item;
+    }
+
+    void applyEdit(String peerKey, long prevTs, String newText, long newEditTs) {
+        SQLiteDatabase db = getWritableDatabase();
+        Cursor c = db.rawQuery(
+                "SELECT text, edit_history FROM " + T +
+                " WHERE peer_key=? AND (server_ts=? OR last_edit_ts=?)",
+                new String[]{peerKey, String.valueOf(prevTs), String.valueOf(prevTs)});
+        if (!c.moveToFirst()) { c.close(); return; }
+        String oldText  = c.isNull(0) ? "" : c.getString(0);
+        String histJson = c.isNull(1) ? "[]" : c.getString(1);
+        c.close();
+        try {
+            org.json.JSONArray hist = new org.json.JSONArray(histJson);
+            hist.put(oldText);
+            ContentValues cv = new ContentValues();
+            cv.put("text", newText);
+            cv.put("edit_history", hist.toString());
+            if (newEditTs > 0) cv.put("last_edit_ts", newEditTs);
+            db.update(T, cv, "peer_key=? AND (server_ts=? OR last_edit_ts=?)",
+                    new String[]{peerKey, String.valueOf(prevTs), String.valueOf(prevTs)});
+        } catch (Exception ignored) {}
     }
 }
