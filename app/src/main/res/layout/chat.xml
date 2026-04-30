@@ -108,21 +108,35 @@
     </LinearLayout>
 
     <!-- Debug log (toggle in Settings) -->
-    <ScrollView
-        android:id="@+id/debug_scroll"
+    <LinearLayout
+        android:id="@+id/debug_panel"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
         android:background="#111111"
         android:visibility="gone">
-        <TextView
-            android:id="@+id/debug_log"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:textColor="#00FF00"
+        <Button
+            android:id="@+id/btn_copy_log"
+            android:layout_width="wrap_content"
+            android:layout_height="24dp"
+            android:layout_margin="2dp"
+            android:text="Copy"
             android:textSize="10sp"
-            android:fontFamily="monospace"
-            android:padding="4dp"/>
-    </ScrollView>
+            android:padding="2dp"/>
+        <ScrollView
+            android:id="@+id/debug_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="120dp">
+            <TextView
+                android:id="@+id/debug_log"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#00FF00"
+                android:textSize="10sp"
+                android:fontFamily="monospace"
+                android:padding="4dp"/>
+        </ScrollView>
+    </LinearLayout>
 
     <!-- Composer (unchanged) -->
     <LinearLayout

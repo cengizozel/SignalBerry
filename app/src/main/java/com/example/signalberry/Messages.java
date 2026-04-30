@@ -67,6 +67,7 @@ public class Messages extends AppCompatActivity {
 
     private android.widget.TextView debugLogView;
     private android.widget.ScrollView debugScrollView;
+    private android.widget.LinearLayout debugPanel;
     private final DebugLog.Listener debugListener = line -> {
         if (debugLogView == null) return;
         debugLogView.append(line + "\n");
@@ -134,7 +135,16 @@ public class Messages extends AppCompatActivity {
 
         debugLogView    = findViewById(R.id.debug_log);
         debugScrollView = findViewById(R.id.debug_scroll);
+        debugPanel      = findViewById(R.id.debug_panel);
         DebugLog.register(debugListener);
+        findViewById(R.id.btn_copy_log).setOnClickListener(v -> {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("log", DebugLog.getAll()));
+                android.widget.Toast.makeText(this, "Copied", android.widget.Toast.LENGTH_SHORT).show();
+            }
+        });
 
         ImageView toolbarAvatar = findViewById(R.id.toolbar_avatar);
         toolbarAvatar.setOnClickListener(v -> {
@@ -192,7 +202,7 @@ public class Messages extends AppCompatActivity {
 
     private void updateDebugPanel() {
         boolean on = prefs.getBoolean("debug_log", false);
-        debugScrollView.setVisibility(on ? android.view.View.VISIBLE : android.view.View.GONE);
+        debugPanel.setVisibility(on ? android.view.View.VISIBLE : android.view.View.GONE);
         if (on) {
             debugLogView.setText(DebugLog.getAll());
             debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));

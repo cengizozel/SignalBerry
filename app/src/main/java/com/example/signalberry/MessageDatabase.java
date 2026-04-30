@@ -159,6 +159,12 @@ class MessageDatabase extends SQLiteOpenHelper {
         } catch (Exception ignored) {}
     }
 
+    void updateServerTs(String peerKey, long oldTs, long newTs) {
+        getWritableDatabase().execSQL(
+                "UPDATE " + T + " SET server_ts=? WHERE peer_key=? AND dir='out' AND server_ts=?",
+                new Object[]{newTs, peerKey, oldTs});
+    }
+
     // -1 means locally deleted; row is kept so bridge re-delivery is deduped
     static final int ST_DELETED = -1;
 

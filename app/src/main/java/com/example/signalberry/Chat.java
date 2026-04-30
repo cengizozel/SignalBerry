@@ -74,6 +74,7 @@ public class Chat extends AppCompatActivity {
 
     private android.widget.TextView debugLogView;
     private android.widget.ScrollView debugScrollView;
+    private android.widget.LinearLayout debugPanel;
     private final DebugLog.Listener debugListener = line -> {
         if (debugLogView == null) return;
         debugLogView.append(line + "\n");
@@ -121,7 +122,16 @@ public class Chat extends AppCompatActivity {
         // Debug log
         debugLogView    = findViewById(R.id.debug_log);
         debugScrollView = findViewById(R.id.debug_scroll);
+        debugPanel      = findViewById(R.id.debug_panel);
         DebugLog.register(debugListener);
+        findViewById(R.id.btn_copy_log).setOnClickListener(v -> {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null) {
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("log", DebugLog.getAll()));
+                Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
+            }
+        });
 
         // Top bar
         ImageButton back = findViewById(R.id.btn_back);
@@ -228,19 +238,25 @@ public class Chat extends AppCompatActivity {
             input.setText("");
             send.setEnabled(false);
             new Thread(() -> {
-                // Persist before sending so navigation away doesn't lose the message.
-                // confirmPending() will update server_ts + status when the WS echo arrives.
                 msgDb.upsert(chatDbKey, "out", "text", text, null, null, null, null,
                         now, ST_PENDING, qt, qa);
-                boolean ok = sendOnce(text, replyItem, replyTs);
+                long signalTs = sendOnce(text, replyItem, replyTs);
                 runOnUiThread(() -> {
                     send.setEnabled(true);
-                    if (ok) {
+                    if (signalTs > 0) {
                         boolean noteToSelf = notEmpty(myNumber) && notEmpty(peerNumber)
                                 && digits(myNumber).equals(digits(peerNumber));
                         int confirmedSt = noteToSelf ? ST_DELIVERED : ST_SENT;
-                        markNewestMyPendingTo(confirmedSt);
-                        msgDb.updateStatusByText(chatDbKey, text, confirmedSt);
+                        // Update pending item's serverTs to the real Signal timestamp
+                        for (int i = rawItems.size() - 1; i >= 0; i--) {
+                            MessageItem m = rawItems.get(i);
+                            if ("me".equals(m.from) && m.status == ST_PENDING && text.equals(m.text)) {
+                                m.serverTs = signalTs;
+                                m.status = confirmedSt;
+                                break;
+                            }
+                        }
+                        msgDb.confirmPending(chatDbKey, text, signalTs, confirmedSt);
                         rebuildDisplay();
                     } else {
                         msgDb.deleteByServerTs(chatDbKey, now);
@@ -264,7 +280,7 @@ public class Chat extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         boolean dbgOn = prefs.getBoolean("debug_log", false);
-        debugScrollView.setVisibility(dbgOn ? android.view.View.VISIBLE : android.view.View.GONE);
+        debugPanel.setVisibility(dbgOn ? android.view.View.VISIBLE : android.view.View.GONE);
         if (dbgOn) {
             debugLogView.setText(DebugLog.getAll());
             debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
@@ -361,7 +377,8 @@ public class Chat extends AppCompatActivity {
     }
 
     // -------------------- SEND --------------------
-    private boolean sendOnce(String text, MessageItem replyTo, long replyTs) {
+    // Returns the Signal timestamp from the response, or 0 on failure.
+    private long sendOnce(String text, MessageItem replyTo, long replyTs) {
         try {
             String url = baseSignal + "/v2/send";
             JSONObject body = new JSONObject();
@@ -379,9 +396,26 @@ public class Chat extends AppCompatActivity {
                         : (replyTo.text != null ? replyTo.text : "");
                 body.put("quote_message", qText);
             }
-            int code = httpPostJson(url, body.toString());
-            return code >= 200 && code < 300;
-        } catch (Exception e) { return false; }
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setConnectTimeout(8000); c.setReadTimeout(8000);
+            c.setRequestMethod("POST");
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            c.setDoOutput(true);
+            try (java.io.OutputStream os = new java.io.BufferedOutputStream(c.getOutputStream())) {
+                os.write(body.toString().getBytes("UTF-8"));
+            }
+            int code = c.getResponseCode();
+            if (code < 200 || code >= 300) { c.disconnect(); return 0; }
+            long signalTs = 0;
+            try (java.io.InputStream is = c.getInputStream();
+                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
+                byte[] buf = new byte[1024]; int n;
+                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+                signalTs = new JSONObject(bos.toString("UTF-8")).optLong("timestamp", 0);
+            }
+            c.disconnect();
+            return signalTs > 0 ? signalTs : 1;
+        } catch (Exception e) { return 0; }
     }
 
     // -------------------- SIGNAL WS --------------------
@@ -627,6 +661,26 @@ public class Chat extends AppCompatActivity {
         if (receipt != null) {
             dbg("RECEIPT json=" + receipt);
             if (receipt.optBoolean("isDelivery", false)) {
+                // Delivery receipt contains the real Signal timestamps — correct any off-by-~300ms serverTs
+                JSONArray recTs = receipt.optJSONArray("timestamps");
+                if (recTs != null) {
+                    for (int i = 0; i < recTs.length(); i++) {
+                        long confirmedTs = recTs.optLong(i, 0);
+                        if (confirmedTs <= 0) continue;
+                        for (int j = rawItems.size() - 1; j >= 0; j--) {
+                            MessageItem m = rawItems.get(j);
+                            if (!"me".equals(m.from)) continue;
+                            long diff = Math.abs(m.serverTs - confirmedTs);
+                            if (diff > 0 && diff < 2000) {
+                                long oldTs = m.serverTs;
+                                m.serverTs = confirmedTs;
+                                msgDb.updateServerTs(chatDbKey, oldTs, confirmedTs);
+                                dbg("RECEIPT corrected ts " + oldTs + " -> " + confirmedTs);
+                                break;
+                            }
+                        }
+                    }
+                }
                 if (upgradeNewestMyStatusToAtLeast(ST_DELIVERED)) {
                     msgDb.upgradeAllOutStatus(chatDbKey, ST_DELIVERED);
                     changed = true;

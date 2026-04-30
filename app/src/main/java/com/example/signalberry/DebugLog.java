@@ -13,7 +13,7 @@ import java.util.Locale;
 class DebugLog {
     interface Listener { void onLine(String line); }
 
-    private static final int MAX = 300;
+    private static final int MAX = 200;
     private static final List<String> lines = new ArrayList<>();
     private static final List<WeakReference<Listener>> listeners = new ArrayList<>();
     private static final Handler main = new Handler(Looper.getMainLooper());
