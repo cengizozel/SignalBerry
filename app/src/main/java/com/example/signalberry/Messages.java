@@ -135,6 +135,13 @@ public class Messages extends AppCompatActivity {
                     .show();
         });
 
+        // Pull-to-refresh
+        androidx.swiperefreshlayout.widget.SwipeRefreshLayout swipe = findViewById(R.id.swipe_refresh);
+        swipe.setOnRefreshListener(() -> {
+            loadConversations();
+            swipe.setRefreshing(false);
+        });
+
         // Initial load
         loadConversations();
 

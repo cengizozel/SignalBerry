@@ -58,13 +58,20 @@
         android:background="@android:drawable/edit_text" />
 
     <!-- Chat list -->
-    <ListView
-        android:id="@+id/list_people"
+    <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+        android:id="@+id/swipe_refresh"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:dividerHeight="1dp"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp" />
+        android:layout_weight="1">
+
+        <ListView
+            android:id="@+id/list_people"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:dividerHeight="1dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp" />
+
+    </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
 </LinearLayout>
