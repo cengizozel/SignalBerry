@@ -55,7 +55,7 @@
         android:singleLine="true"
         android:padding="10dp"
         android:layout_margin="12dp"
-        android:textColor="@color/colorTextPrimary"
+        android:textColor="#222222"
         android:textColorHint="@color/colorTextMuted"
         android:background="@android:drawable/edit_text" />
 
