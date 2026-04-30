@@ -236,7 +236,11 @@ public class Chat extends AppCompatActivity {
                 runOnUiThread(() -> {
                     send.setEnabled(true);
                     if (ok) {
-                        markNewestMyPendingTo(ST_SENT);
+                        boolean noteToSelf = notEmpty(myNumber) && notEmpty(peerNumber)
+                                && digits(myNumber).equals(digits(peerNumber));
+                        int confirmedSt = noteToSelf ? ST_DELIVERED : ST_SENT;
+                        markNewestMyPendingTo(confirmedSt);
+                        msgDb.updateStatusByText(chatDbKey, text, confirmedSt);
                         rebuildDisplay();
                     } else {
                         msgDb.deleteByServerTs(chatDbKey, now);
