@@ -100,10 +100,13 @@ public class Messages extends AppCompatActivity {
                 return;
             }
 
-            startActivity(new android.content.Intent(Messages.this, Chat.class)
-                    .putExtra("peer_name",   peerName)
+            boolean demoOn = getSharedPreferences("signalberry", MODE_PRIVATE).getBoolean("demo_mode", false);
+            android.content.Intent intent = new android.content.Intent(Messages.this, Chat.class)
+                    .putExtra("peer_name",   demoOn ? DemoData.NAMES[position % DemoData.NAMES.length] : peerName)
                     .putExtra("peer_number", peerNumber)
-                    .putExtra("peer_uuid",   peerUuid));
+                    .putExtra("peer_uuid",   peerUuid);
+            if (demoOn) intent.putExtra("demo_index", position);
+            startActivity(intent);
         });
 
         plus.setOnClickListener(v ->
@@ -125,7 +128,7 @@ public class Messages extends AppCompatActivity {
 
         avatarCache = new AvatarCache(getCacheDir(), restBase, myNumber);
         msgDb = new MessageDatabase(this);
-        adapter = new MessagesAdapter(this, all, avatarCache);
+        adapter = new MessagesAdapter(this, all, avatarCache, prefs.getBoolean("demo_mode", false));
         list.setAdapter(adapter);
 
         // service start moved to onResume so activity is guaranteed visible
@@ -154,12 +157,14 @@ public class Messages extends AppCompatActivity {
         toolbarAvatar.setOnClickListener(v -> {
             boolean dbgOn  = prefs.getBoolean("debug_log", false);
             boolean darkOn = prefs.getBoolean("dark_mode", false);
+            boolean demoOn = prefs.getBoolean("demo_mode", false);
             new AlertDialog.Builder(this)
                     .setTitle("Settings")
                     .setItems(new String[]{
                             "Log out",
                             "Debug log: " + (dbgOn ? "ON ✓" : "OFF"),
-                            "Dark mode: " + (darkOn ? "ON ✓" : "OFF")
+                            "Dark mode: " + (darkOn ? "ON ✓" : "OFF"),
+                            "Demo mode: " + (demoOn ? "ON ✓" : "OFF")
                     }, (dialog, which) -> {
                         if (which == 0) {
                             getSharedPreferences("signalberry", MODE_PRIVATE).edit().clear().apply();
@@ -169,12 +174,18 @@ public class Messages extends AppCompatActivity {
                             boolean newVal = !prefs.getBoolean("debug_log", false);
                             prefs.edit().putBoolean("debug_log", newVal).apply();
                             updateDebugPanel();
-                        } else {
+                        } else if (which == 2) {
                             boolean newDark = !prefs.getBoolean("dark_mode", false);
                             prefs.edit().putBoolean("dark_mode", newDark).apply();
                             AppCompatDelegate.setDefaultNightMode(
                                     newDark ? AppCompatDelegate.MODE_NIGHT_YES
                                             : AppCompatDelegate.MODE_NIGHT_NO);
+                        } else {
+                            boolean newDemo = !prefs.getBoolean("demo_mode", false);
+                            prefs.edit().putBoolean("demo_mode", newDemo).apply();
+                            adapter.setDemoMode(newDemo);
+                            adapter.notifyDataSetChanged();
+                            filter(search.getText().toString());
                         }
                     })
                     .show();
@@ -665,7 +676,7 @@ public class Messages extends AppCompatActivity {
             }
         }
         ((ListView) findViewById(R.id.list_people)).setAdapter(
-                new MessagesAdapter(this, filtered, avatarCache));
+                new MessagesAdapter(this, filtered, avatarCache, prefs.getBoolean("demo_mode", false)));
     }
 
     // ---------------- Conversation cache (DB-backed) ----------------

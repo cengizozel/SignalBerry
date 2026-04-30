@@ -31,12 +31,16 @@ class MessagesAdapter extends BaseAdapter {
     private final List<Map<String, String>> data;
     private final AvatarCache avatarCache;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private boolean demoMode;
 
-    MessagesAdapter(Context ctx, List<Map<String, String>> data, AvatarCache avatarCache) {
+    MessagesAdapter(Context ctx, List<Map<String, String>> data, AvatarCache avatarCache, boolean demoMode) {
         this.ctx = ctx;
         this.data = data;
         this.avatarCache = avatarCache;
+        this.demoMode = demoMode;
     }
+
+    void setDemoMode(boolean demoMode) { this.demoMode = demoMode; }
 
     @Override public int getCount()          { return data.size(); }
     @Override public Object getItem(int pos) { return data.get(pos); }
@@ -57,10 +61,18 @@ class MessagesAdapter extends BaseAdapter {
 
         String name       = item.get("name");
         String number     = item.get("number");
+        String uuid       = item.get("uuid");
         String avatarPath = item.get("avatar_path");
 
+        String snippet = item.get("snippet");
+        if (demoMode) {
+            name    = DemoData.NAMES[position % DemoData.NAMES.length];
+            snippet = DemoData.fakeSnippetByIndex(position);
+            avatarPath = "";
+        }
+
         tvName.setText(name);
-        tvSnippet.setText(item.get("snippet"));
+        tvSnippet.setText(snippet);
         tvTime.setText(item.get("time"));
 
         int count = 0;
@@ -80,7 +92,7 @@ class MessagesAdapter extends BaseAdapter {
         ivAvatar.setImageBitmap(initialsCircle(name, sizePx));
         ivAvatar.setTag(number);
 
-        if (avatarCache != null && number != null && !number.isEmpty()) {
+        if (!demoMode && avatarCache != null && number != null && !number.isEmpty()) {
             final String tag = number;
             final String path = avatarPath;
             new Thread(() -> {

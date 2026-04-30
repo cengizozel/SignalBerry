@@ -50,6 +50,8 @@ public class Chat extends AppCompatActivity {
     private String peerName;
 
     private SharedPreferences prefs;
+    private boolean demoMode;
+    private int demoIndex = -1;
     private String chatDbKey;   // DB peer_key = digits(peerNumber) or peerUuid
     private String lastTsKey;   // kept only for read_ts tracking (onResume)
 
@@ -162,6 +164,12 @@ public class Chat extends AppCompatActivity {
         LinearLayoutManager lm = new LinearLayoutManager(this);
         lm.setStackFromEnd(true);
         recycler.setLayoutManager(lm);
+        demoMode = prefs.getBoolean("demo_mode", false);
+        if (demoMode) {
+            demoIndex = getIntent().getIntExtra("demo_index", 0);
+            peerName = DemoData.NAMES[demoIndex % DemoData.NAMES.length];
+            ((android.widget.TextView) findViewById(R.id.title_name)).setText(peerName);
+        }
         chatAdapter = new ChatAdapter(displayItems, baseSignal, this);
         chatAdapter.setOnImageClickListener(pos -> {
             ArrayList<String> sources = new ArrayList<>();
@@ -324,9 +332,11 @@ public class Chat extends AppCompatActivity {
             debugLogView.setText(DebugLog.getAll());
             debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
         }
-        openWebSocket();
-        startBridgePolling();
-        fetchFromBridgeOnce();
+        if (!demoMode) {
+            openWebSocket();
+            startBridgePolling();
+            fetchFromBridgeOnce();
+        }
         String chatKey = chatDbKey;
         prefs.edit()
                 .putLong("read_ts_" + chatKey, System.currentTimeMillis())
@@ -1273,6 +1283,12 @@ public class Chat extends AppCompatActivity {
 
     // -------------------- persistence --------------------
     private void loadHistory() {
+        if (demoMode) {
+            rawItems.clear();
+            rawItems.addAll(DemoData.getFakeMessages(demoIndex));
+            rebuildDisplay();
+            return;
+        }
         // Load from DB
         List<MessageItem> stored = msgDb.getMessages(chatDbKey);
         if (!stored.isEmpty()) {

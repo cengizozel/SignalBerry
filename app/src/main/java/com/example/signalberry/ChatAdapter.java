@@ -86,7 +86,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         });
         boolean selected = m.serverTs > 0 && selectedTs.contains(m.serverTs);
         h.itemView.setBackgroundColor(selected ? 0x331976D2 : android.graphics.Color.TRANSPARENT);
-        if (h instanceof MeTextVH)    ((MeTextVH) h).bind(m);
+        if (h instanceof MeTextVH)         ((MeTextVH) h).bind(m);
         else if (h instanceof PeerTextVH)  ((PeerTextVH) h).bind(m);
         else if (h instanceof MeImageVH)   ((MeImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
         else if (h instanceof PeerImageVH) ((PeerImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
@@ -116,7 +116,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
         void bind(MessageItem m) {
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
-            bindQuote(m, quoteBlock, quoteLine, tvQuote, false);
+            bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
         }
     }
@@ -137,7 +137,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         void bind(MessageItem m) {
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
             tvStatus.setText(statusMark(m.status));
-            bindQuote(m, quoteBlock, quoteLine, tvQuote, true);
+            bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
         }
     }
@@ -170,7 +170,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             } else {
                 tvCaption.setVisibility(View.GONE);
             }
-            bindQuote(m, quoteBlock, quoteLine, tvQuote, false);
+            bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
         }
     }
@@ -204,7 +204,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             } else {
                 tvCaption.setVisibility(View.GONE);
             }
-            bindQuote(m, quoteBlock, quoteLine, tvQuote, true);
+            bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
         }
     }
@@ -220,13 +220,12 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         tv.setVisibility(View.VISIBLE);
     }
 
-    private static void bindQuote(MessageItem m, LinearLayout block, View line, TextView tv, boolean isMeBubble) {
+    private static void bindQuote(MessageItem m, LinearLayout block, View line, TextView tv) {
         if (m.quoteText != null && !m.quoteText.isEmpty()) {
             block.setVisibility(View.VISIBLE);
             boolean quoteFromMe = "me".equals(m.quoteAuthor);
             line.setBackgroundColor(quoteFromMe ? 0xFF4CAF50 : 0xFF2196F3);
-            String prefix = quoteFromMe ? "You: " : "";
-            tv.setText(prefix + m.quoteText);
+            tv.setText((quoteFromMe ? "You: " : "") + m.quoteText);
         } else {
             block.setVisibility(View.GONE);
         }
