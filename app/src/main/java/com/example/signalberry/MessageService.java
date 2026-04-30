@@ -117,6 +117,27 @@ public class MessageService extends Service {
             String srcNum  = env.optString("sourceNumber", "");
             String srcUuid = env.optString("sourceUuid", "");
 
+            SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
+
+            // Read sync: another linked device marked a conversation as read
+            JSONObject sync = env.optJSONObject("syncMessage");
+            if (sync != null) {
+                JSONArray readMsgs = sync.optJSONArray("readMessages");
+                if (readMsgs != null) {
+                    for (int i = 0; i < readMsgs.length(); i++) {
+                        JSONObject rm = readMsgs.getJSONObject(i);
+                        String sNum  = rm.optString("senderNumber", "");
+                        String sUuid = rm.optString("senderUuid", "");
+                        long ts      = rm.optLong("timestamp", 0);
+                        if (ts <= 0) continue;
+                        String chatKey = digits(sNum).isEmpty() ? sUuid : digits(sNum);
+                        if (isEmpty(chatKey)) continue;
+                        long curTs = prefs.getLong("read_ts_" + chatKey, 0);
+                        if (ts > curTs) prefs.edit().putLong("read_ts_" + chatKey, ts).apply();
+                    }
+                }
+            }
+
             JSONObject data = env.optJSONObject("dataMessage");
             if (data == null) return;
 
@@ -127,7 +148,6 @@ public class MessageService extends Service {
             if (text.isEmpty() && !hasAtt) return;
 
             // Don't notify if this chat is currently open
-            SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
             String openPeer = prefs.getString("open_chat_peer", "");
             String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
             if (!openPeer.isEmpty() && openPeer.equals(senderKey)) return;

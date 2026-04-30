@@ -357,6 +357,26 @@ public class Messages extends AppCompatActivity {
                     }, 800);
                 }
             }
+
+            // Read sync: another linked device read a conversation
+            try {
+                org.json.JSONArray readMsgs = sync.optJSONArray("readMessages");
+                if (readMsgs != null) {
+                    for (int i = 0; i < readMsgs.length(); i++) {
+                        JSONObject rm = readMsgs.getJSONObject(i);
+                        String sNum  = rm.optString("senderNumber", "");
+                        String sUuid = rm.optString("senderUuid", "");
+                        long ts      = rm.optLong("timestamp", 0);
+                        if (ts <= 0) continue;
+                        String chatKey = !isEmpty(sNum) ? digits(sNum) : safeTrim(sUuid);
+                        if (isEmpty(chatKey)) continue;
+                        long curTs = prefs.getLong("read_ts_" + chatKey, 0);
+                        if (ts > curTs) prefs.edit().putLong("read_ts_" + chatKey, ts).apply();
+                        final String ck = chatKey;
+                        runOnUiThread(() -> clearUnreadForKey(ck));
+                    }
+                }
+            } catch (Exception ignored) {}
         }
     }
 
@@ -473,6 +493,20 @@ public class Messages extends AppCompatActivity {
             if (numMatch || uuidMatch) return i;
         }
         return -1;
+    }
+
+    private void clearUnreadForKey(String chatKey) {
+        for (Map<String, String> row : all) {
+            String num  = row.get("number");
+            String uuid = row.get("uuid");
+            String rKey = !isEmpty(num) ? digits(num) : safeTrim(uuid);
+            if (chatKey.equals(rKey)) {
+                row.put("unread", "0");
+                break;
+            }
+        }
+        adapter.notifyDataSetChanged();
+        filter(search.getText().toString());
     }
 
     // ---------------- Unread counts (local, no network) ----------------
