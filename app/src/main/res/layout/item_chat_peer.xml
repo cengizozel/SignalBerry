@@ -11,7 +11,7 @@
             android:id="@+id/quoteBlock"
             android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:background="#DDDDCC"
+            android:background="@color/colorQuotePeer"
             android:paddingTop="4dp" android:paddingBottom="4dp" android:paddingEnd="6dp"
             android:visibility="gone">
             <View
@@ -23,13 +23,13 @@
                 android:id="@+id/tvQuote"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:maxLines="2" android:ellipsize="end"
-                android:textSize="12sp" android:textColor="#444444"/>
+                android:textSize="12sp" android:textColor="@color/colorTextPrimary"/>
         </LinearLayout>
 
         <TextView
             android:id="@+id/tvMessage"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:textColor="#000000" android:textSize="16sp"/>
+            android:textColor="@color/colorTextPrimary" android:textSize="16sp"/>
 
         <TextView
             android:id="@+id/tvReactions"

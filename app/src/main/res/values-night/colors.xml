@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorBackground">#1C1C1E</color>
+    <color name="colorSurface">#2C2C2E</color>
+    <color name="colorTextPrimary">#FFFFFF</color>
+    <color name="colorTextSecondary">#AAAAAA</color>
+    <color name="colorTextMuted">#777777</color>
+    <color name="colorDivider">#3A3A3C</color>
+    <color name="colorQuoteMe">#1A3A1A</color>
+    <color name="colorQuotePeer">#2C2C1A</color>
+</resources>

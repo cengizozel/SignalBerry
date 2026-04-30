@@ -21,6 +21,7 @@ import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatDelegate;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -137,21 +138,29 @@ public class Messages extends AppCompatActivity {
 
         ImageView toolbarAvatar = findViewById(R.id.toolbar_avatar);
         toolbarAvatar.setOnClickListener(v -> {
-            boolean dbgOn = prefs.getBoolean("debug_log", false);
+            boolean dbgOn  = prefs.getBoolean("debug_log", false);
+            boolean darkOn = prefs.getBoolean("dark_mode", false);
             new AlertDialog.Builder(this)
                     .setTitle("Settings")
                     .setItems(new String[]{
                             "Log out",
-                            "Debug log: " + (dbgOn ? "ON ✓" : "OFF")
+                            "Debug log: " + (dbgOn ? "ON ✓" : "OFF"),
+                            "Dark mode: " + (darkOn ? "ON ✓" : "OFF")
                     }, (dialog, which) -> {
                         if (which == 0) {
                             getSharedPreferences("signalberry", MODE_PRIVATE).edit().clear().apply();
                             startActivity(new Intent(Messages.this, ServerConnect.class));
                             finish();
-                        } else {
+                        } else if (which == 1) {
                             boolean newVal = !prefs.getBoolean("debug_log", false);
                             prefs.edit().putBoolean("debug_log", newVal).apply();
                             updateDebugPanel();
+                        } else {
+                            boolean newDark = !prefs.getBoolean("dark_mode", false);
+                            prefs.edit().putBoolean("dark_mode", newDark).apply();
+                            AppCompatDelegate.setDefaultNightMode(
+                                    newDark ? AppCompatDelegate.MODE_NIGHT_YES
+                                            : AppCompatDelegate.MODE_NIGHT_NO);
                         }
                     })
                     .show();

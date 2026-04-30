@@ -11,7 +11,7 @@
         android:layout_height="56dp"
         android:paddingStart="12dp"
         android:paddingEnd="12dp"
-        android:background="#FFFFFF">
+        android:background="@color/colorBackground">
 
         <!-- Left: profile photo -->
         <ImageView
@@ -55,6 +55,8 @@
         android:singleLine="true"
         android:padding="10dp"
         android:layout_margin="12dp"
+        android:textColor="@color/colorTextPrimary"
+        android:textColorHint="@color/colorTextMuted"
         android:background="@android:drawable/edit_text" />
 
     <!-- Debug log (toggle in Settings) -->
