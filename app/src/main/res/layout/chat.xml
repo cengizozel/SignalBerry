@@ -24,6 +24,43 @@
             android:text="Chat" android:textStyle="bold" android:textSize="18sp"/>
     </RelativeLayout>
 
+    <!-- Selection bar (shown in multi-select mode) -->
+    <LinearLayout
+        android:id="@+id/selection_bar"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="#1976D2"
+        android:paddingStart="4dp" android:paddingEnd="4dp"
+        android:visibility="gone">
+
+        <ImageButton
+            android:id="@+id/btn_cancel_selection"
+            android:layout_width="40dp" android:layout_height="40dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:tint="#FFFFFF"
+            android:contentDescription="Cancel selection"/>
+
+        <TextView
+            android:id="@+id/tv_selection_count"
+            android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginStart="8dp"/>
+
+        <ImageButton
+            android:id="@+id/btn_delete_selected"
+            android:layout_width="40dp" android:layout_height="40dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_delete"
+            android:tint="#FFFFFF"
+            android:contentDescription="Delete selected"/>
+    </LinearLayout>
+
     <!-- Messages list (RecyclerView now) -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/chat_list"

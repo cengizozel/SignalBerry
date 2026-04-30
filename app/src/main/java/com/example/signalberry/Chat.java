@@ -59,6 +59,12 @@ public class Chat extends AppCompatActivity {
     private android.widget.LinearLayout replyPreviewBar;
     private android.widget.TextView tvReplyPreviewText;
 
+    // Selection state
+    private final java.util.Set<Long> selectedTs = new java.util.HashSet<>();
+    private boolean selectionMode = false;
+    private android.widget.LinearLayout selectionBar;
+    private android.widget.TextView tvSelectionCount;
+
     private RecyclerView recycler;
     private ChatAdapter chatAdapter;
     private final List<MessageItem> rawItems     = new ArrayList<>(); // business logic, no headers
@@ -157,6 +163,24 @@ public class Chat extends AppCompatActivity {
         tvReplyPreviewText = findViewById(R.id.tv_reply_preview);
         android.widget.ImageButton btnCancelReply = findViewById(R.id.btn_cancel_reply);
         chatAdapter.setOnLongPressListener(this::showMessageMenu);
+        chatAdapter.setOnItemClickListener(pos -> {
+            if (!selectionMode) return;
+            if (pos < 0 || pos >= displayItems.size()) return;
+            MessageItem m = displayItems.get(pos);
+            if (m.type == MessageItem.TYPE_DATE_HEADER || m.serverTs == 0) return;
+            if (selectedTs.contains(m.serverTs)) selectedTs.remove(m.serverTs);
+            else selectedTs.add(m.serverTs);
+            if (selectedTs.isEmpty()) exitSelectionMode();
+            else updateSelectionBar();
+            chatAdapter.notifyDataSetChanged();
+        });
+
+        // Selection bar
+        selectionBar     = findViewById(R.id.selection_bar);
+        tvSelectionCount = findViewById(R.id.tv_selection_count);
+        findViewById(R.id.btn_cancel_selection).setOnClickListener(v -> exitSelectionMode());
+        findViewById(R.id.btn_delete_selected).setOnClickListener(v -> confirmDeleteSelected());
+
         btnCancelReply.setOnClickListener(v -> {
             replyToItem = null;
             replyToTs   = 0;
@@ -675,13 +699,24 @@ public class Chat extends AppCompatActivity {
         if (displayPos < 0 || displayPos >= displayItems.size()) return;
         MessageItem m = displayItems.get(displayPos);
         if (m.type == MessageItem.TYPE_DATE_HEADER || m.serverTs == 0) return;
+
+        if (selectionMode) {
+            // In selection mode, long press just toggles
+            if (selectedTs.contains(m.serverTs)) selectedTs.remove(m.serverTs);
+            else selectedTs.add(m.serverTs);
+            if (selectedTs.isEmpty()) exitSelectionMode();
+            else updateSelectionBar();
+            chatAdapter.notifyDataSetChanged();
+            return;
+        }
+
         String myCurrentReaction = (m.reactions != null) ? m.reactions.get("me") : null;
 
         String[] emojis = {"👍", "❤️", "😂", "😮", "😢", "👎", "🙏", "🎉"};
-        android.widget.LinearLayout row = new android.widget.LinearLayout(this);
-        row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER);
-        row.setPadding(16, 24, 16, 8);
+        android.widget.LinearLayout emojiRow = new android.widget.LinearLayout(this);
+        emojiRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        emojiRow.setGravity(android.view.Gravity.CENTER);
+        emojiRow.setPadding(16, 24, 16, 8);
 
         android.app.AlertDialog[] ref = {null};
         for (String e : emojis) {
@@ -695,11 +730,65 @@ public class Chat extends AppCompatActivity {
                 sendReaction(e, m, remove);
                 if (ref[0] != null) ref[0].dismiss();
             });
-            row.addView(tv);
+            emojiRow.addView(tv);
         }
         ref[0] = new android.app.AlertDialog.Builder(this)
-                .setView(row)
+                .setView(emojiRow)
+                .setPositiveButton("Delete", (d, w) -> confirmDeleteSingle(m.serverTs))
                 .setNeutralButton("Reply", (d, w) -> doReply(displayPos))
+                .setNegativeButton("Select", (d, w) -> enterSelectionMode(m.serverTs))
+                .show();
+        // Tint delete button red after show
+        ref[0].getButton(android.app.AlertDialog.BUTTON_POSITIVE)
+                .setTextColor(0xFFD32F2F);
+    }
+
+    private void enterSelectionMode(long firstTs) {
+        selectionMode = true;
+        selectedTs.clear();
+        selectedTs.add(firstTs);
+        chatAdapter.setSelectedTs(selectedTs);
+        updateSelectionBar();
+        chatAdapter.notifyDataSetChanged();
+    }
+
+    private void exitSelectionMode() {
+        selectionMode = false;
+        selectedTs.clear();
+        chatAdapter.setSelectedTs(selectedTs);
+        selectionBar.setVisibility(android.view.View.GONE);
+        chatAdapter.notifyDataSetChanged();
+    }
+
+    private void updateSelectionBar() {
+        selectionBar.setVisibility(android.view.View.VISIBLE);
+        tvSelectionCount.setText(selectedTs.size() + " selected");
+    }
+
+    private void confirmDeleteSingle(long ts) {
+        new android.app.AlertDialog.Builder(this)
+                .setMessage("Delete this message?")
+                .setPositiveButton("Delete", (d, w) -> {
+                    msgDb.deleteMessages(chatDbKey, java.util.Collections.singletonList(ts));
+                    for (int i = rawItems.size() - 1; i >= 0; i--)
+                        if (rawItems.get(i).serverTs == ts) { rawItems.remove(i); break; }
+                    rebuildDisplay();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void confirmDeleteSelected() {
+        int count = selectedTs.size();
+        new android.app.AlertDialog.Builder(this)
+                .setMessage("Delete " + count + " message" + (count == 1 ? "" : "s") + "?")
+                .setPositiveButton("Delete", (d, w) -> {
+                    msgDb.deleteMessages(chatDbKey, new ArrayList<>(selectedTs));
+                    for (int i = rawItems.size() - 1; i >= 0; i--)
+                        if (selectedTs.contains(rawItems.get(i).serverTs)) rawItems.remove(i);
+                    exitSelectionMode();
+                    rebuildDisplay();
+                })
                 .setNegativeButton("Cancel", null)
                 .show();
     }

@@ -28,12 +28,15 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     interface OnImageClickListener  { void onImageClick(int position); }
     interface OnLongPressListener   { void onLongPress(int position); }
+    interface OnItemClickListener   { void onItemClick(int position); }
 
     private final List<MessageItem> data;
     private final String restBase;
     private final ImageLoader loader;
     private OnImageClickListener imageClickListener;
     private OnLongPressListener longPressListener;
+    private OnItemClickListener itemClickListener;
+    private java.util.Set<Long> selectedTs = new java.util.HashSet<>();
 
     ChatAdapter(List<MessageItem> data, String restBase, Context ctx) {
         this.data = data;
@@ -43,6 +46,8 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     void setOnImageClickListener(OnImageClickListener l) { this.imageClickListener = l; }
     void setOnLongPressListener(OnLongPressListener l)   { this.longPressListener = l; }
+    void setOnItemClickListener(OnItemClickListener l)   { this.itemClickListener = l; }
+    void setSelectedTs(java.util.Set<Long> s)            { this.selectedTs = s; }
 
     @Override public int getItemViewType(int position) {
         MessageItem m = data.get(position);
@@ -72,10 +77,15 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
         MessageItem m = data.get(pos);
         if (h instanceof DateHeaderVH) { ((DateHeaderVH) h).bind(m); return; }
+        h.itemView.setOnClickListener(v -> {
+            if (itemClickListener != null) itemClickListener.onItemClick(pos);
+        });
         h.itemView.setOnLongClickListener(v -> {
             if (longPressListener != null) { longPressListener.onLongPress(pos); return true; }
             return false;
         });
+        boolean selected = m.serverTs > 0 && selectedTs.contains(m.serverTs);
+        h.itemView.setBackgroundColor(selected ? 0x331976D2 : android.graphics.Color.TRANSPARENT);
         if (h instanceof MeTextVH)    ((MeTextVH) h).bind(m);
         else if (h instanceof PeerTextVH)  ((PeerTextVH) h).bind(m);
         else if (h instanceof MeImageVH)   ((MeImageVH) h).bind(m, loader, restBase, pos, imageClickListener);

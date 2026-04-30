@@ -557,9 +557,38 @@ public class Messages extends AppCompatActivity {
                 break;
             }
         }
+        refreshSnippetForPeer(lastReadPeer);
         prefs.edit().remove("last_read_peer").apply();
         adapter.notifyDataSetChanged();
         filter(search.getText().toString());
+    }
+
+    private void refreshSnippetForPeer(String chatKey) {
+        List<android.util.Pair<String, String[]>> sums = msgDb.getConversationSummaries();
+        for (android.util.Pair<String, String[]> s : sums) {
+            if (chatKey.equals(s.first)) {
+                String snippet = s.second[0];
+                String time    = s.second[1];
+                String ts      = s.second[2];
+                for (Map<String, String> row : all) {
+                    String rKey = !isEmpty(row.get("number"))
+                            ? digits(row.get("number")) : safeTrim(row.get("uuid"));
+                    if (chatKey.equals(rKey)) {
+                        row.put("snippet", snippet);
+                        row.put("time", time);
+                        row.put("ts", ts);
+                        break;
+                    }
+                }
+                return;
+            }
+        }
+        // All messages deleted for this peer — remove from list
+        for (int i = all.size() - 1; i >= 0; i--) {
+            String rKey = !isEmpty(all.get(i).get("number"))
+                    ? digits(all.get(i).get("number")) : safeTrim(all.get(i).get("uuid"));
+            if (chatKey.equals(rKey)) { all.remove(i); break; }
+        }
     }
 
     // ---------------- Search filter ----------------

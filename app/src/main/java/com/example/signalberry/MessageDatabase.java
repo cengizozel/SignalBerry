@@ -135,6 +135,13 @@ class MessageDatabase extends SQLiteOpenHelper {
         } catch (Exception ignored) {}
     }
 
+    void deleteMessages(String peerKey, java.util.Collection<Long> timestamps) {
+        if (timestamps.isEmpty()) return;
+        SQLiteDatabase db = getWritableDatabase();
+        for (long ts : timestamps)
+            db.delete(T, "peer_key=? AND server_ts=?", new String[]{peerKey, String.valueOf(ts)});
+    }
+
     void deleteByServerTs(String peerKey, long serverTs) {
         getWritableDatabase().delete(T, "peer_key=? AND server_ts=?",
                 new String[]{peerKey, String.valueOf(serverTs)});
