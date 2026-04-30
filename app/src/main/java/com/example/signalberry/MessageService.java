@@ -147,9 +147,47 @@ public class MessageService extends Service {
 
             if (text.isEmpty() && !hasAtt) return;
 
+            long ts = env.optLong("timestamp", 0);
+            String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
+
+            // Parse quote data
+            String quoteText = null, quoteAuthor = null;
+            JSONObject quote = data.optJSONObject("quote");
+            if (quote != null) {
+                quoteText = quote.optString("text", "");
+                String myNumber = prefs.getString("number", "");
+                String qNum = quote.optString("authorNumber", quote.optString("author", ""));
+                boolean qFromMe = !isEmpty(myNumber) && digits(qNum).equals(digits(myNumber));
+                quoteAuthor = qFromMe ? "me" : "peer";
+                if (quoteText.isEmpty()) quoteText = "📷 Photo";
+            }
+
+            // Write to DB so the message (with quote) is persisted before app opens
+            if (!isEmpty(text) && ts > 0) {
+                try {
+                    new MessageDatabase(this).upsert(
+                            senderKey, "in", "text", text, null, null, null, null,
+                            ts, Chat.ST_DELIVERED, quoteText, quoteAuthor);
+                } catch (Exception ignored) {}
+            }
+            if (hasAtt && ts > 0) {
+                for (int i = 0; i < atts.length(); i++) {
+                    JSONObject a = atts.optJSONObject(i);
+                    if (a == null) continue;
+                    String cid  = a.optString("id", "");
+                    String mime = a.optString("contentType", "");
+                    if (!isEmpty(cid)) {
+                        try {
+                            new MessageDatabase(this).upsert(
+                                    senderKey, "in", "image", null, cid, mime, null, null,
+                                    ts, Chat.ST_DELIVERED, quoteText, quoteAuthor);
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+
             // Don't notify if this chat is currently open
             String openPeer = prefs.getString("open_chat_peer", "");
-            String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
             if (!openPeer.isEmpty() && openPeer.equals(senderKey)) return;
 
             // Resolve display name
