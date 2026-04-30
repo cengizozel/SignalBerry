@@ -235,7 +235,10 @@ public class Chat extends AppCompatActivity {
                 boolean ok = sendOnce(text, replyItem, replyTs);
                 runOnUiThread(() -> {
                     send.setEnabled(true);
-                    if (!ok) {
+                    if (ok) {
+                        markNewestMyPendingTo(ST_SENT);
+                        rebuildDisplay();
+                    } else {
                         msgDb.deleteByServerTs(chatDbKey, now);
                         for (int i = rawItems.size() - 1; i >= 0; i--)
                             if (rawItems.get(i).serverTs == now) { rawItems.remove(i); break; }
@@ -384,11 +387,11 @@ public class Chat extends AppCompatActivity {
             String wsUrl = toWs(baseSignal) + "/v1/receive/" + URLEncoder.encode(myNumber, "UTF-8");
             Request req = new Request.Builder().url(wsUrl).build();
             ws = wsClient.newWebSocket(req, new WebSocketListener() {
-                @Override public void onOpen(WebSocket s, Response r) { retrySec = 1; }
+                @Override public void onOpen(WebSocket s, Response r) { retrySec = 1; dbg("WS-OPEN"); }
                 @Override public void onMessage(WebSocket s, String text) { handleWsPayload(text); }
                 @Override public void onMessage(WebSocket s, ByteString b)  { handleWsPayload(b.utf8()); }
-                @Override public void onClosed(WebSocket s, int c, String r) { ws = null; scheduleReconnect(); }
-                @Override public void onFailure(WebSocket s, Throwable t, Response r) { ws = null; scheduleReconnect(); }
+                @Override public void onClosed(WebSocket s, int c, String r) { ws = null; dbg("WS-CLOSED code=" + c); scheduleReconnect(); }
+                @Override public void onFailure(WebSocket s, Throwable t, Response r) { ws = null; dbg("WS-FAIL " + (t != null ? t.getMessage() : "null")); scheduleReconnect(); }
             });
         } catch (Exception e) { scheduleReconnect(); }
     }
@@ -539,6 +542,24 @@ public class Chat extends AppCompatActivity {
                         }
                         dbg("SYNC-SENT matched=" + matched + " confirmPending ts=" + ts);
                         msgDb.confirmPending(chatDbKey, msg, ts, ST_SENT);
+                        if (!matched) {
+                            // Check if already in rawItems (sent from this device, confirmed via HTTP).
+                            // If so, just update the server ts. Otherwise it's from another device.
+                            boolean alreadyPresent = false;
+                            for (int i = rawItems.size() - 1; i >= 0; i--) {
+                                MessageItem m = rawItems.get(i);
+                                if ("me".equals(m.from) && msg.equals(m.text)) {
+                                    m.serverTs = ts;
+                                    alreadyPresent = true;
+                                    break;
+                                }
+                            }
+                            if (!alreadyPresent) {
+                                MessageItem item = new MessageItem("me", msg, ST_SENT);
+                                item.serverTs = ts;
+                                rawItems.add(item);
+                            }
+                        }
                         changed = true;
                     }
                     JSONArray atts = sent.optJSONArray("attachments");
@@ -628,9 +649,16 @@ public class Chat extends AppCompatActivity {
                         id = msgDb.upsert(chatDbKey, dir, "image", null, attId, mime,
                                 null, null, ts, finalSt, null, null);
                     } else if (!isEmpty(text)) {
-                        id = msgDb.upsert(chatDbKey, dir, "text", text, null, null, null, null,
-                                ts, finalSt, null, null);
-                        if (id <= 0 && ts > 0) backfillServerTs("in".equals(dir) ? "peer" : "me", text, ts);
+                        if ("out".equals(dir)) {
+                            // Use confirmPending so the pending row (server_ts=local) gets
+                            // updated in place rather than creating a duplicate row.
+                            msgDb.confirmPending(chatDbKey, text, ts, finalSt);
+                            id = 1;
+                        } else {
+                            id = msgDb.upsert(chatDbKey, dir, "text", text, null, null, null, null,
+                                    ts, finalSt, null, null);
+                            if (id <= 0 && ts > 0) backfillServerTs("peer", text, ts);
+                        }
                     } else {
                         continue;
                     }
@@ -638,17 +666,10 @@ public class Chat extends AppCompatActivity {
                 }
 
                 if (anyNew) {
-                    // reload items from DB so memory and DB are in sync
                     List<MessageItem> fresh = msgDb.getMessages(chatDbKey);
                     runOnUiThread(() -> {
-                        // preserve in-memory PENDING items (not yet in DB)
-                        List<MessageItem> pending = new ArrayList<>();
-                        for (MessageItem m : rawItems)
-                            if (m.status == ST_PENDING) pending.add(m);
-
                         rawItems.clear();
                         rawItems.addAll(fresh);
-                        rawItems.addAll(pending);
                         rebuildDisplay();
                     });
                 }
