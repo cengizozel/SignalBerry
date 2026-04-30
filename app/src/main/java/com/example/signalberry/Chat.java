@@ -144,6 +144,10 @@ public class Chat extends AppCompatActivity {
                 Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show();
             }
         });
+        findViewById(R.id.btn_clear_log).setOnClickListener(v -> {
+            DebugLog.clear();
+            debugLogView.setText("");
+        });
 
         // Typing indicator
         tvTyping = findViewById(R.id.tv_typing);
@@ -549,7 +553,9 @@ public class Chat extends AppCompatActivity {
                     return true;
                 }
 
-                String text = data.optString("message", data.optString("text", "")).trim();
+                String rawMsg = data.isNull("message") ? "" : data.optString("message", "");
+                String rawTxt = data.isNull("text")    ? "" : data.optString("text", "");
+                String text = (rawMsg.isEmpty() ? rawTxt : rawMsg).trim();
                 JSONArray atts = data.optJSONArray("attachments");
                 boolean hasImage = atts != null && atts.length() > 0;
 
@@ -623,7 +629,7 @@ public class Chat extends AppCompatActivity {
                         return true;
                     }
 
-                    String msg = sent.optString("message", "").trim();
+                    String msg = (sent.isNull("message") ? "" : sent.optString("message", "")).trim();
                     long   ts  = sent.optLong("timestamp", 0);
                     dbg("SYNC-SENT msg=" + msg + " ts=" + ts);
                     if (!isEmpty(msg)) {

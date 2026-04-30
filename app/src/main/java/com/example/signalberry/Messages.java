@@ -145,6 +145,10 @@ public class Messages extends AppCompatActivity {
                 android.widget.Toast.makeText(this, "Copied", android.widget.Toast.LENGTH_SHORT).show();
             }
         });
+        findViewById(R.id.btn_clear_log).setOnClickListener(v -> {
+            DebugLog.clear();
+            debugLogView.setText("");
+        });
 
         ImageView toolbarAvatar = findViewById(R.id.toolbar_avatar);
         toolbarAvatar.setOnClickListener(v -> {
@@ -405,7 +409,14 @@ public class Messages extends AppCompatActivity {
         String srcUuid = env.optString("sourceUuid", "");
         JSONObject data = env.optJSONObject("dataMessage");
         if (data != null) {
-            String text = data.optString("message", data.optString("text", "")).trim();
+            // Skip reactions, remote-deletes, and any envelope where message is JSON null
+            if (data.optJSONObject("reaction") != null) data = null;
+            else if (data.optJSONObject("remoteDelete") != null) data = null;
+        }
+        if (data != null) {
+            String rawMsg = data.isNull("message") ? "" : data.optString("message", "");
+            String rawTxt = data.isNull("text")    ? "" : data.optString("text", "");
+            String text = (rawMsg.isEmpty() ? rawTxt : rawMsg).trim();
             long ts = env.optLong("timestamp", System.currentTimeMillis());
             if (!isEmpty(text)) {
                 String srcKey = peerKey(srcNum, srcUuid);
@@ -457,7 +468,7 @@ public class Messages extends AppCompatActivity {
                     }
                 }
 
-                String text     = sent.optString("message", "").trim();
+                String text     = (sent.isNull("message") ? "" : sent.optString("message", "")).trim();
                 long ts         = sent.optLong("timestamp", System.currentTimeMillis());
                 if (!isEmpty(text) && editMsgSync == null) {
                     String destKey = peerKey(destNum, destUuid);

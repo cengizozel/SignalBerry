@@ -53,4 +53,8 @@ class DebugLog {
             return sb.toString();
         }
     }
+
+    static void clear() {
+        synchronized (lines) { lines.clear(); }
+    }
 }

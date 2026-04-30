@@ -20,7 +20,7 @@ import static com.example.signalberry.Utils.*;
 class MessageDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME    = "signalberry.db";
-    private static final int    DB_VERSION = 4;
+    private static final int    DB_VERSION = 5;
     private static final String T          = "messages";
 
     MessageDatabase(Context ctx) {
@@ -57,6 +57,10 @@ class MessageDatabase extends SQLiteOpenHelper {
         }
         if (old < 4) {
             db.execSQL("ALTER TABLE " + T + " ADD COLUMN last_edit_ts INTEGER NOT NULL DEFAULT 0");
+        }
+        if (old < 5) {
+            // Purge rows where text is the literal string "null" (org.json JSON-null bug)
+            db.execSQL("DELETE FROM " + T + " WHERE msg_type='text' AND text='null'");
         }
     }
 
