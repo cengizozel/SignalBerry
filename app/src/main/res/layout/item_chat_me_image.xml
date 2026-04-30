@@ -58,5 +58,12 @@
             android:padding="6dp"
             android:textSize="14sp"
             android:visibility="gone"/>
+
+        <TextView
+            android:id="@+id/tvReactions"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textSize="18sp"
+            android:paddingTop="2dp" android:paddingBottom="2dp"
+            android:visibility="gone"/>
     </LinearLayout>
 </LinearLayout>

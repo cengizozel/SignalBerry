@@ -70,6 +70,23 @@
             android:contentDescription="Cancel reply"/>
     </LinearLayout>
 
+    <!-- Debug log (toggle in Settings) -->
+    <ScrollView
+        android:id="@+id/debug_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:background="#111111"
+        android:visibility="gone">
+        <TextView
+            android:id="@+id/debug_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#00FF00"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:padding="4dp"/>
+    </ScrollView>
+
     <!-- Composer (unchanged) -->
     <LinearLayout
         android:layout_width="match_parent"

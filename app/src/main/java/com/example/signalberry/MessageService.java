@@ -164,10 +164,23 @@ public class MessageService extends Service {
             JSONObject rd = data.optJSONObject("remoteDelete");
             if (rd != null) {
                 long targetTs = rd.optLong("timestamp", 0);
-                long ts = env.optLong("timestamp", 0);
                 String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
                 if (targetTs > 0 && !isEmpty(senderKey)) {
                     try { new MessageDatabase(this).deleteByServerTs(senderKey, targetTs); }
+                    catch (Exception ignored) {}
+                }
+                return;
+            }
+
+            // Reaction from peer
+            JSONObject rxn = data.optJSONObject("reaction");
+            if (rxn != null) {
+                String emoji    = rxn.optString("emoji", "");
+                long   targetTs = rxn.optLong("targetSentTimestamp", 0);
+                boolean remove  = rxn.optBoolean("isRemove", false);
+                String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
+                if (!isEmpty(emoji) && targetTs > 0 && !isEmpty(senderKey)) {
+                    try { new MessageDatabase(this).updateReaction(senderKey, targetTs, "peer", emoji, remove); }
                     catch (Exception ignored) {}
                 }
                 return;

@@ -18,6 +18,7 @@ class MessageItem {
     long serverTs;      // Signal-level timestamp (ms); 0 if unknown — used for sending quote replies
     String quoteText;   // non-null when this message is a reply to another
     String quoteAuthor; // "me" or "peer", non-null when quoteText != null
+    java.util.Map<String, String> reactions; // authorKey → emoji, null if none
 
     // date separator
     MessageItem(String dateLabel, boolean isHeader) {

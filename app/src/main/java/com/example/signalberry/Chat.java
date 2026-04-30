@@ -56,6 +56,8 @@ public class Chat extends AppCompatActivity {
     // Reply state
     private MessageItem replyToItem = null;
     private long        replyToTs   = 0;
+    private android.widget.LinearLayout replyPreviewBar;
+    private android.widget.TextView tvReplyPreviewText;
 
     private RecyclerView recycler;
     private ChatAdapter chatAdapter;
@@ -63,6 +65,14 @@ public class Chat extends AppCompatActivity {
     private final List<MessageItem> displayItems = new ArrayList<>(); // adapter list, with date headers
 
     private MessageDatabase msgDb;
+
+    private android.widget.TextView debugLogView;
+    private android.widget.ScrollView debugScrollView;
+    private final DebugLog.Listener debugListener = line -> {
+        if (debugLogView == null) return;
+        debugLogView.append(line + "\n");
+        debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
+    };
 
     private OkHttpClient wsClient;
     private WebSocket ws;
@@ -102,6 +112,11 @@ public class Chat extends AppCompatActivity {
 
         msgDb = new MessageDatabase(this);
 
+        // Debug log
+        debugLogView    = findViewById(R.id.debug_log);
+        debugScrollView = findViewById(R.id.debug_scroll);
+        DebugLog.register(debugListener);
+
         // Top bar
         ImageButton back = findViewById(R.id.btn_back);
         back.setOnClickListener(v -> finish());
@@ -138,25 +153,14 @@ public class Chat extends AppCompatActivity {
         recycler.setAdapter(chatAdapter);
 
         // Reply bar
-        android.widget.LinearLayout replyPreview = findViewById(R.id.reply_preview);
-        android.widget.TextView tvReplyPreview   = findViewById(R.id.tv_reply_preview);
+        replyPreviewBar   = findViewById(R.id.reply_preview);
+        tvReplyPreviewText = findViewById(R.id.tv_reply_preview);
         android.widget.ImageButton btnCancelReply = findViewById(R.id.btn_cancel_reply);
-        chatAdapter.setOnReplyListener(pos -> {
-            if (pos < 0 || pos >= displayItems.size()) return;
-            MessageItem tapped = displayItems.get(pos);
-            if (tapped.type == MessageItem.TYPE_DATE_HEADER) return;
-            replyToItem = tapped;
-            replyToTs   = replyToItem.serverTs;
-            String preview = replyToItem.type == MessageItem.TYPE_IMAGE
-                    ? "📷 Photo" : (replyToItem.text != null ? replyToItem.text : "");
-            String label = "me".equals(replyToItem.from) ? "You: " + preview : preview;
-            tvReplyPreview.setText(label);
-            replyPreview.setVisibility(android.view.View.VISIBLE);
-        });
+        chatAdapter.setOnLongPressListener(this::showMessageMenu);
         btnCancelReply.setOnClickListener(v -> {
             replyToItem = null;
             replyToTs   = 0;
-            replyPreview.setVisibility(android.view.View.GONE);
+            replyPreviewBar.setVisibility(android.view.View.GONE);
         });
 
         // Composer
@@ -183,7 +187,7 @@ public class Chat extends AppCompatActivity {
             final long        replyTs   = replyToTs;
             replyToItem = null;
             replyToTs   = 0;
-            replyPreview.setVisibility(android.view.View.GONE);
+            replyPreviewBar.setVisibility(android.view.View.GONE);
 
             MessageItem pending = new MessageItem("me", text, ST_PENDING);
             pending.serverTs = now;
@@ -221,6 +225,12 @@ public class Chat extends AppCompatActivity {
 
     @Override protected void onResume() {
         super.onResume();
+        boolean dbgOn = prefs.getBoolean("debug_log", false);
+        debugScrollView.setVisibility(dbgOn ? android.view.View.VISIBLE : android.view.View.GONE);
+        if (dbgOn) {
+            debugLogView.setText(DebugLog.getAll());
+            debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
+        }
         openWebSocket();
         startBridgePolling();
         fetchFromBridgeOnce();
@@ -237,6 +247,11 @@ public class Chat extends AppCompatActivity {
         closeWebSocket();
         stopBridgePolling();
         prefs.edit().remove("open_chat_peer").apply();
+    }
+
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        DebugLog.unregister(debugListener);
     }
 
     // -------------------- ATTACHMENT PICK --------------------
@@ -358,6 +373,7 @@ public class Chat extends AppCompatActivity {
     }
 
     private void handleWsPayload(String payload) {
+        dbg("WS: " + payload.substring(0, Math.min(120, payload.length())));
         boolean changed = false;
         try {
             String p = payload.trim();
@@ -389,6 +405,16 @@ public class Chat extends AppCompatActivity {
                 if (rd != null) {
                     long targetTs = rd.optLong("timestamp", 0);
                     if (targetTs > 0) deleteMessage(targetTs);
+                    return true;
+                }
+
+                JSONObject rxn = data.optJSONObject("reaction");
+                if (rxn != null) {
+                    String emoji    = rxn.optString("emoji", "");
+                    long   targetTs = rxn.optLong("targetSentTimestamp", 0);
+                    boolean remove  = rxn.optBoolean("isRemove", false);
+                    dbg("RXN-IN peer emoji=" + emoji + " targetTs=" + targetTs + " remove=" + remove);
+                    if (!emoji.isEmpty() && targetTs > 0) applyReaction("peer", emoji, remove, targetTs);
                     return true;
                 }
 
@@ -456,13 +482,29 @@ public class Chat extends AppCompatActivity {
                         return true;
                     }
 
+                    JSONObject rxnSync = sent.optJSONObject("reaction");
+                    if (rxnSync != null) {
+                        String emoji    = rxnSync.optString("emoji", "");
+                        long   targetTs = rxnSync.optLong("targetSentTimestamp", 0);
+                        boolean remove  = rxnSync.optBoolean("isRemove", false);
+                        dbg("RXN-SYNC me emoji=" + emoji + " targetTs=" + targetTs + " remove=" + remove);
+                        if (!emoji.isEmpty() && targetTs > 0) applyReaction("me", emoji, remove, targetTs);
+                        return true;
+                    }
+
                     String msg = sent.optString("message", "").trim();
                     long   ts  = sent.optLong("timestamp", 0);
                     if (!isEmpty(msg)) {
-                        markNewestPendingWithTextTo(msg, ST_SENT);
-                        // write to DB with real Signal ts
-                        msgDb.upsert(chatDbKey, "out", "text", msg, null, null, null, null,
-                                ts, ST_SENT, null, null);
+                        // Update rawItem: status + real Signal ts (so reactions can match by ts)
+                        for (int i = rawItems.size() - 1; i >= 0; i--) {
+                            MessageItem m = rawItems.get(i);
+                            if ("me".equals(m.from) && m.status == ST_PENDING && msg.equals(m.text)) {
+                                m.status = ST_SENT;
+                                m.serverTs = ts;
+                                break;
+                            }
+                        }
+                        msgDb.confirmPending(chatDbKey, msg, ts, ST_SENT);
                         changed = true;
                     }
                     JSONArray atts = sent.optJSONArray("attachments");
@@ -625,6 +667,102 @@ public class Chat extends AppCompatActivity {
             }
         }
         runOnUiThread(this::rebuildDisplay);
+    }
+
+    private static void dbg(String msg) { DebugLog.log(msg); }
+
+    private void showMessageMenu(int displayPos) {
+        if (displayPos < 0 || displayPos >= displayItems.size()) return;
+        MessageItem m = displayItems.get(displayPos);
+        if (m.type == MessageItem.TYPE_DATE_HEADER || m.serverTs == 0) return;
+        String myCurrentReaction = (m.reactions != null) ? m.reactions.get("me") : null;
+
+        String[] emojis = {"👍", "❤️", "😂", "😮", "😢", "👎", "🙏", "🎉"};
+        android.widget.LinearLayout row = new android.widget.LinearLayout(this);
+        row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER);
+        row.setPadding(16, 24, 16, 8);
+
+        android.app.AlertDialog[] ref = {null};
+        for (String e : emojis) {
+            android.widget.TextView tv = new android.widget.TextView(this);
+            tv.setText(e);
+            tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 28);
+            tv.setPadding(12, 8, 12, 8);
+            if (e.equals(myCurrentReaction)) tv.setBackgroundColor(0x33000000);
+            tv.setOnClickListener(v -> {
+                boolean remove = e.equals(myCurrentReaction);
+                sendReaction(e, m, remove);
+                if (ref[0] != null) ref[0].dismiss();
+            });
+            row.addView(tv);
+        }
+        ref[0] = new android.app.AlertDialog.Builder(this)
+                .setView(row)
+                .setNeutralButton("Reply", (d, w) -> doReply(displayPos))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void doReply(int displayPos) {
+        if (displayPos < 0 || displayPos >= displayItems.size()) return;
+        MessageItem tapped = displayItems.get(displayPos);
+        if (tapped.type == MessageItem.TYPE_DATE_HEADER) return;
+        replyToItem = tapped;
+        replyToTs   = replyToItem.serverTs;
+        String preview = replyToItem.type == MessageItem.TYPE_IMAGE
+                ? "📷 Photo" : (replyToItem.text != null ? replyToItem.text : "");
+        String label = "me".equals(replyToItem.from) ? "You: " + preview : preview;
+        tvReplyPreviewText.setText(label);
+        replyPreviewBar.setVisibility(android.view.View.VISIBLE);
+    }
+
+    private void sendReaction(String emoji, MessageItem target, boolean isRemove) {
+        runOnUiThread(() -> {
+            applyReaction("me", emoji, isRemove, target.serverTs);
+            rebuildDisplay();
+        });
+        new Thread(() -> {
+            try {
+                String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+                String targetAuthor = "me".equals(target.from)
+                        ? (notEmpty(myNumber) ? myNumber : peer) : peer;
+                JSONObject body = new JSONObject();
+                body.put("recipient", peer);
+                body.put("reaction", emoji);
+                body.put("target_author", targetAuthor);
+                body.put("timestamp", target.serverTs);
+                String url = baseSignal + "/v1/reactions/" + URLEncoder.encode(myNumber, "UTF-8");
+                dbg("SEND-RXN emoji=" + emoji + " ts=" + target.serverTs + " remove=" + isRemove + " url=" + url);
+                int code = isRemove ? httpDeleteJson(url, body.toString())
+                                   : httpPostJson(url, body.toString());
+                dbg("SEND-RXN resp=" + code + " body=" + body);
+            } catch (Exception ignored) {}
+        }).start();
+    }
+
+    private void applyReaction(String authorKey, String emoji, boolean isRemove, long targetTs) {
+        msgDb.updateReaction(chatDbKey, targetTs, authorKey, emoji, isRemove);
+        boolean found = false;
+        for (MessageItem m : rawItems) {
+            if (m.serverTs == targetTs) {
+                if (m.reactions == null) m.reactions = new java.util.HashMap<>();
+                if (isRemove) m.reactions.remove(authorKey);
+                else m.reactions.put(authorKey, emoji);
+                found = true;
+                break;
+            }
+        }
+        dbg("applyReaction author=" + authorKey + " emoji=" + emoji + " targetTs=" + targetTs + " found=" + found);
+        if (!found) {
+            dbg("  rawItems ts dump: " + rawItemsTsDump());
+        }
+    }
+
+    private String rawItemsTsDump() {
+        StringBuilder sb = new StringBuilder();
+        for (MessageItem m : rawItems) sb.append(m.from).append(":").append(m.serverTs).append(" ");
+        return sb.length() > 200 ? sb.substring(sb.length() - 200) : sb.toString();
     }
 
     private void bumpLastTs(long ts) {

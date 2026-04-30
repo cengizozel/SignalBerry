@@ -7,15 +7,20 @@ import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.util.Pair;
 
+import org.json.JSONObject;
+
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 import static com.example.signalberry.Utils.*;
 
 class MessageDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME    = "signalberry.db";
-    private static final int    DB_VERSION = 1;
+    private static final int    DB_VERSION = 2;
     private static final String T          = "messages";
 
     MessageDatabase(Context ctx) {
@@ -42,8 +47,9 @@ class MessageDatabase extends SQLiteOpenHelper {
     }
 
     @Override public void onUpgrade(SQLiteDatabase db, int old, int nw) {
-        db.execSQL("DROP TABLE IF EXISTS " + T);
-        onCreate(db);
+        if (old < 2) {
+            db.execSQL("ALTER TABLE " + T + " ADD COLUMN reactions TEXT");
+        }
     }
 
     /**
@@ -97,6 +103,36 @@ class MessageDatabase extends SQLiteOpenHelper {
         getWritableDatabase().execSQL(
                 "UPDATE " + T + " SET status=MAX(status,?) WHERE peer_key=? AND dir='out' AND text=?",
                 new Object[]{newStatus, peerKey, text});
+    }
+
+    void confirmPending(String peerKey, String text, long realTs, int newStatus) {
+        ContentValues cv = new ContentValues();
+        cv.put("server_ts", realTs);
+        cv.put("status", newStatus);
+        int rows = getWritableDatabase().update(T, cv,
+                "peer_key=? AND dir='out' AND status=0 AND text=?",
+                new String[]{peerKey, text});
+        if (rows == 0) {
+            upsert(peerKey, "out", "text", text, null, null, null, null, realTs, newStatus, null, null);
+        }
+    }
+
+    void updateReaction(String peerKey, long serverTs, String authorKey, String emoji, boolean isRemove) {
+        SQLiteDatabase db = getWritableDatabase();
+        Cursor c = db.rawQuery(
+                "SELECT id, reactions FROM " + T + " WHERE peer_key=? AND server_ts=?",
+                new String[]{peerKey, String.valueOf(serverTs)});
+        if (!c.moveToFirst()) { c.close(); return; }
+        long rowId = c.getLong(0);
+        String json = c.isNull(1) ? "{}" : c.getString(1);
+        c.close();
+        try {
+            JSONObject map = new JSONObject(json);
+            if (isRemove) map.remove(authorKey);
+            else map.put(authorKey, emoji);
+            db.execSQL("UPDATE " + T + " SET reactions=? WHERE id=?",
+                    new Object[]{map.toString(), rowId});
+        } catch (Exception ignored) {}
     }
 
     void deleteByServerTs(String peerKey, long serverTs) {
@@ -190,6 +226,16 @@ class MessageDatabase extends SQLiteOpenHelper {
         item.serverTs    = ts;
         item.quoteText   = isEmpty(qt) ? null : qt;
         item.quoteAuthor = isEmpty(qa) ? null : qa;
+        int ri = c.getColumnIndex("reactions");
+        if (ri >= 0 && !c.isNull(ri)) {
+            try {
+                JSONObject ro = new JSONObject(c.getString(ri));
+                Map<String, String> reactions = new HashMap<>();
+                Iterator<String> keys = ro.keys();
+                while (keys.hasNext()) { String k = keys.next(); reactions.put(k, ro.getString(k)); }
+                if (!reactions.isEmpty()) item.reactions = reactions;
+            } catch (Exception ignored) {}
+        }
         return item;
     }
 }

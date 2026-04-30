@@ -64,6 +64,14 @@ public class Messages extends AppCompatActivity {
     private AvatarCache avatarCache;
     private MessageDatabase msgDb;
 
+    private android.widget.TextView debugLogView;
+    private android.widget.ScrollView debugScrollView;
+    private final DebugLog.Listener debugListener = line -> {
+        if (debugLogView == null) return;
+        debugLogView.append(line + "\n");
+        debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
+    };
+
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.messages);
@@ -123,14 +131,28 @@ public class Messages extends AppCompatActivity {
         loadConversationCache();
         loadSelfAvatar();
 
+        debugLogView    = findViewById(R.id.debug_log);
+        debugScrollView = findViewById(R.id.debug_scroll);
+        DebugLog.register(debugListener);
+
         ImageView toolbarAvatar = findViewById(R.id.toolbar_avatar);
         toolbarAvatar.setOnClickListener(v -> {
+            boolean dbgOn = prefs.getBoolean("debug_log", false);
             new AlertDialog.Builder(this)
                     .setTitle("Settings")
-                    .setItems(new String[]{"Log out"}, (dialog, which) -> {
-                        getSharedPreferences("signalberry", MODE_PRIVATE).edit().clear().apply();
-                        startActivity(new Intent(Messages.this, ServerConnect.class));
-                        finish();
+                    .setItems(new String[]{
+                            "Log out",
+                            "Debug log: " + (dbgOn ? "ON ✓" : "OFF")
+                    }, (dialog, which) -> {
+                        if (which == 0) {
+                            getSharedPreferences("signalberry", MODE_PRIVATE).edit().clear().apply();
+                            startActivity(new Intent(Messages.this, ServerConnect.class));
+                            finish();
+                        } else {
+                            boolean newVal = !prefs.getBoolean("debug_log", false);
+                            prefs.edit().putBoolean("debug_log", newVal).apply();
+                            updateDebugPanel();
+                        }
                     })
                     .show();
         });
@@ -159,8 +181,18 @@ public class Messages extends AppCompatActivity {
                 .build();
     }
 
+    private void updateDebugPanel() {
+        boolean on = prefs.getBoolean("debug_log", false);
+        debugScrollView.setVisibility(on ? android.view.View.VISIBLE : android.view.View.GONE);
+        if (on) {
+            debugLogView.setText(DebugLog.getAll());
+            debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
+        }
+    }
+
     @Override protected void onResume() {
         super.onResume();
+        updateDebugPanel();
         if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                         != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -181,6 +213,11 @@ public class Messages extends AppCompatActivity {
     @Override protected void onPause() {
         super.onPause();
         closeWebSocket();
+    }
+
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        DebugLog.unregister(debugListener);
     }
 
     // ---------------- Initial load (contacts + latest message per peer) ----------------

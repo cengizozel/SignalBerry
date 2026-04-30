@@ -57,6 +57,23 @@
         android:layout_margin="12dp"
         android:background="@android:drawable/edit_text" />
 
+    <!-- Debug log (toggle in Settings) -->
+    <ScrollView
+        android:id="@+id/debug_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="120dp"
+        android:background="#111111"
+        android:visibility="gone">
+        <TextView
+            android:id="@+id/debug_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#00FF00"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:padding="4dp"/>
+    </ScrollView>
+
     <!-- Chat list -->
     <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
         android:id="@+id/swipe_refresh"
