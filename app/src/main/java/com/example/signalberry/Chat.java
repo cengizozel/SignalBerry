@@ -615,16 +615,26 @@ public class Chat extends AppCompatActivity {
                     JSONObject it  = arr.getJSONObject(i);
                     String dir     = it.optString("dir", "");
                     String text    = it.optString("text", "");
+                    String attId   = it.optString("attId", "");
+                    String mime    = it.optString("mime", "");
                     long   ts      = it.optLong("serverTs", 0);
                     int    st      = it.optInt("status", ST_SENT);
 
-                    if (isEmpty(text) || isEmpty(dir)) continue;
+                    if (isEmpty(dir)) continue;
 
                     int finalSt = "in".equals(dir) ? Math.max(st, ST_DELIVERED) : st;
-                    long id = msgDb.upsert(chatDbKey, dir, "text", text, null, null, null, null,
-                            ts, finalSt, null, null);
+                    long id;
+                    if (!isEmpty(attId)) {
+                        id = msgDb.upsert(chatDbKey, dir, "image", null, attId, mime,
+                                null, null, ts, finalSt, null, null);
+                    } else if (!isEmpty(text)) {
+                        id = msgDb.upsert(chatDbKey, dir, "text", text, null, null, null, null,
+                                ts, finalSt, null, null);
+                        if (id <= 0 && ts > 0) backfillServerTs("in".equals(dir) ? "peer" : "me", text, ts);
+                    } else {
+                        continue;
+                    }
                     if (id > 0) anyNew = true;
-                    else if (ts > 0) backfillServerTs("in".equals(dir) ? "peer" : "me", text, ts);
                 }
 
                 if (anyNew) {
