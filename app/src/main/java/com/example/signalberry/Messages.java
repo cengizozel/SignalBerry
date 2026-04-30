@@ -62,6 +62,7 @@ public class Messages extends AppCompatActivity {
     private final Map<String,String> nameByPeerKey = new HashMap<>();
 
     private AvatarCache avatarCache;
+    private MessageDatabase msgDb;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -113,6 +114,7 @@ public class Messages extends AppCompatActivity {
         }
 
         avatarCache = new AvatarCache(getCacheDir(), restBase, myNumber);
+        msgDb = new MessageDatabase(this);
         adapter = new MessagesAdapter(this, all, avatarCache);
         list.setAdapter(adapter);
 
@@ -206,6 +208,13 @@ public class Messages extends AppCompatActivity {
                     boolean hasAvatar = prof != null && prof.optBoolean("has_avatar", false);
                     String avatarPath = hasAvatar ? uuid : "";
 
+                    // Store contact metadata so DB conversation list can look it up
+                    prefs.edit()
+                            .putString("contact_num_"    + key, num)
+                            .putString("contact_uuid_"   + key, uuid)
+                            .putString("contact_avatar_" + key, avatarPath)
+                            .apply();
+
                     Map<String, String> row = new HashMap<>();
                     row.put("name",        display);
                     row.put("snippet",     "");
@@ -229,30 +238,36 @@ public class Messages extends AppCompatActivity {
                     long readTs = prefs.getLong("read_ts_" + chatKey, 0);
 
                     try {
+                        long dbAfter = msgDb.getLastTs(chatKey);
                         String url = bridgeBase + "/messages?peer=" + URLEncoder.encode(peer, "UTF-8")
-                                + "&after=0&limit=50";
+                                + "&after=" + dbAfter + "&limit=200";
                         JSONObject obj = new JSONObject(httpGet(url));
                         JSONArray items = obj.optJSONArray("items");
-                        if (items != null && items.length() > 0) {
-                            JSONObject last = items.getJSONObject(items.length() - 1);
-                            String dir   = last.optString("dir", "in");
-                            String text  = last.optString("text", "");
-                            String attId = last.optString("attId", "");
-                            long ts      = last.optLong("serverTs", 0);
-                            String prefix  = "out".equals(dir) ? "You: " : "";
-                            String display = (!text.isEmpty()) ? text : (!attId.isEmpty() ? "📷 Photo" : "");
-                            row.put("snippet", prefix + display);
-                            row.put("time", formatShortTime(ts));
-                            row.put("ts", String.valueOf(ts));
-
-                            int unread = 0;
+                        if (items != null) {
                             for (int j = 0; j < items.length(); j++) {
                                 JSONObject it = items.getJSONObject(j);
-                                if ("in".equals(it.optString("dir")) && it.optLong("serverTs", 0) > readTs)
-                                    unread++;
+                                String dir  = it.optString("dir", "in");
+                                String text = it.optString("text", "");
+                                long   ts   = it.optLong("serverTs", 0);
+                                int    st   = it.optInt("status", Chat.ST_SENT);
+                                if (isEmpty(text) || ts == 0) continue;
+                                int finalSt = "in".equals(dir) ? Math.max(st, Chat.ST_DELIVERED) : st;
+                                msgDb.upsert(chatKey, dir, "text", text, null, null, null, null,
+                                        ts, finalSt, null, null);
                             }
-                            row.put("unread", String.valueOf(unread));
                         }
+                        // Now query DB for this peer's latest snippet + unread
+                        List<android.util.Pair<String, String[]>> sums = msgDb.getConversationSummaries();
+                        for (android.util.Pair<String, String[]> s : sums) {
+                            if (chatKey.equals(s.first)) {
+                                row.put("snippet", s.second[0]);
+                                row.put("time",    s.second[1]);
+                                row.put("ts",      s.second[2]);
+                                break;
+                            }
+                        }
+                        int unread = msgDb.countUnread(chatKey, readTs);
+                        row.put("unread", String.valueOf(unread));
                     } catch (Exception ignored) {}
                 }
 
@@ -264,7 +279,6 @@ public class Messages extends AppCompatActivity {
                 }
                 sortByTsDesc(withMsg);
 
-                saveConversationCache(withMsg);
                 runOnUiThread(() -> {
                     all.clear();
                     all.addAll(withMsg);
@@ -323,7 +337,7 @@ public class Messages extends AppCompatActivity {
         JSONObject env = obj.optJSONObject("envelope");
         if (env == null) return;
 
-        // Incoming message → optimistic update
+        // Incoming message → write to DB + optimistic UI update
         String srcNum  = env.optString("sourceNumber", env.optString("source", ""));
         String srcUuid = env.optString("sourceUuid", "");
         JSONObject data = env.optJSONObject("dataMessage");
@@ -331,16 +345,18 @@ public class Messages extends AppCompatActivity {
             String text = data.optString("message", data.optString("text", "")).trim();
             long ts = env.optLong("timestamp", System.currentTimeMillis());
             if (!isEmpty(text)) {
+                String srcKey = peerKey(srcNum, srcUuid);
+                msgDb.upsert(srcKey, "in", "text", text, null, null, null, null,
+                        ts, Chat.ST_DELIVERED, null, null);
                 runOnUiThread(() ->
                         updateRowImmediateUI(srcNum, srcUuid, /*outgoing=*/false, text, ts));
-                // delayed reconcile (bridge write may lag)
                 handler.postDelayed(new Runnable() {
                     @Override public void run() { refreshOnePeer(srcNum, srcUuid); }
                 }, 800);
             }
         }
 
-        // Sent echo (you sent from another device) → optimistic update
+        // Sent echo (you sent from another device) → write to DB + optimistic UI update
         JSONObject sync = env.optJSONObject("syncMessage");
         if (sync != null) {
             JSONObject sent = sync.optJSONObject("sentMessage");
@@ -350,6 +366,9 @@ public class Messages extends AppCompatActivity {
                 String text     = sent.optString("message", "").trim();
                 long ts         = sent.optLong("timestamp", System.currentTimeMillis());
                 if (!isEmpty(text)) {
+                    String destKey = peerKey(destNum, destUuid);
+                    msgDb.upsert(destKey, "out", "text", text, null, null, null, null,
+                            ts, Chat.ST_SENT, null, null);
                     runOnUiThread(() ->
                             updateRowImmediateUI(destNum, destUuid, /*outgoing=*/true, text, ts));
                     handler.postDelayed(new Runnable() {
@@ -426,59 +445,31 @@ public class Messages extends AppCompatActivity {
     }
 
     private void refreshOnePeer(String number, String uuid) {
-        final String peer = !isEmpty(number) ? number : uuid;
-        if (isEmpty(peer)) return;
-
-        new Thread(() -> {
-            try {
-                String url = bridgeBase + "/messages?peer=" + URLEncoder.encode(peer, "UTF-8") + "&after=0&limit=50";
-                JSONObject obj = new JSONObject(httpGet(url));
-                JSONArray items = obj.optJSONArray("items");
-                if (items == null || items.length() == 0) return;
-
-                JSONObject last = items.getJSONObject(items.length() - 1);
-                String dir  = last.optString("dir", "in");
-                String text = last.optString("text", "");
-                long ts     = last.optLong("serverTs", 0);
-
-                final String snippet  = ("out".equals(dir) ? "You: " : "") + text;
-                final String time     = formatShortTime(ts);
-                final long   tsFinal  = ts;
-
-                runOnUiThread(new Runnable() {
-                    @Override public void run() {
-                        int idx = findRowIndex(number, uuid);
-                        if (idx >= 0) {
-                            Map<String, String> row = all.get(idx);
-                            long curTs = parseLongSafe(row.get("ts"));   // <- existing ts in UI
-                            if (tsFinal >= curTs) {                      // <- DO NOT DOWNGRADE
-                                row.put("snippet", snippet);
-                                row.put("time", time);
-                                row.put("ts", String.valueOf(tsFinal));
-                                sortByTsDesc(all);
-                                adapter.notifyDataSetChanged();
-                                filter(search.getText().toString());
-                            }
-                            // else: ignore older bridge result
-                        } else {
-                            // row doesn’t exist yet – add it
-                            Map<String, String> row = new HashMap<String, String>();
-                            row.put("name", nameByPeerKey.get(peerKey(number, uuid)));
-                            row.put("number", number == null ? "" : number);
-                            row.put("uuid",   uuid   == null ? "" : uuid);
+        // DB was already updated by handleEnvelope; re-query summary for this peer
+        String key = peerKey(number, uuid);
+        List<android.util.Pair<String, String[]>> sums = msgDb.getConversationSummaries();
+        for (android.util.Pair<String, String[]> s : sums) {
+            if (key.equals(s.first)) {
+                final String snippet = s.second[0];
+                final String time    = s.second[1];
+                final long   ts      = parseLongSafe(s.second[2]);
+                runOnUiThread(() -> {
+                    int idx = findRowIndex(number, uuid);
+                    if (idx >= 0) {
+                        Map<String, String> row = all.get(idx);
+                        if (ts >= parseLongSafe(row.get("ts"))) {
                             row.put("snippet", snippet);
                             row.put("time", time);
-                            row.put("ts", String.valueOf(tsFinal));
-                            all.add(row);
+                            row.put("ts", String.valueOf(ts));
                             sortByTsDesc(all);
                             adapter.notifyDataSetChanged();
                             filter(search.getText().toString());
                         }
                     }
                 });
-
-            } catch (Exception ignored) {}
-        }).start();
+                return;
+            }
+        }
     }
 
     private int findRowIndex(String number, String uuid) {
@@ -543,41 +534,38 @@ public class Messages extends AppCompatActivity {
                 new MessagesAdapter(this, filtered, avatarCache));
     }
 
-    // ---------------- Conversation cache ----------------
-    private static final String PREF_CONV_CACHE = "conv_cache";
-
-    private void saveConversationCache(List<Map<String, String>> rows) {
-        try {
-            JSONArray arr = new JSONArray();
-            for (Map<String, String> row : rows) {
-                JSONObject o = new JSONObject();
-                for (Map.Entry<String, String> e : row.entrySet())
-                    if (e.getValue() != null) o.put(e.getKey(), e.getValue());
-                arr.put(o);
-            }
-            prefs.edit().putString(PREF_CONV_CACHE, arr.toString()).apply();
-        } catch (Exception ignored) {}
-    }
+    // ---------------- Conversation cache (DB-backed) ----------------
 
     private void loadConversationCache() {
-        try {
-            String raw = prefs.getString(PREF_CONV_CACHE, "[]");
-            JSONArray arr = new JSONArray(raw);
-            if (arr.length() == 0) return;
-            List<Map<String, String>> cached = new ArrayList<>();
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject o = arr.getJSONObject(i);
-                Map<String, String> row = new HashMap<>();
-                for (java.util.Iterator<String> it = o.keys(); it.hasNext(); ) {
-                    String k = it.next();
-                    row.put(k, o.optString(k, ""));
-                }
-                cached.add(row);
-            }
-            all.clear();
-            all.addAll(cached);
-            adapter.notifyDataSetChanged();
-        } catch (Exception ignored) {}
+        List<android.util.Pair<String, String[]>> summaries = msgDb.getConversationSummaries();
+        if (summaries.isEmpty()) return;
+        List<Map<String, String>> rows = new ArrayList<>();
+        for (android.util.Pair<String, String[]> s : summaries) {
+            String key    = s.first;
+            String snippet = s.second[0];
+            String time   = s.second[1];
+            String ts     = s.second[2];
+            String name   = prefs.getString("contact_name_" + key, key);
+            String num    = prefs.getString("contact_num_" + key, "");
+            String uuid   = prefs.getString("contact_uuid_" + key, "");
+            String avatar = prefs.getString("contact_avatar_" + key, "");
+            long readTs   = prefs.getLong("read_ts_" + key, 0);
+            int unread    = msgDb.countUnread(key, readTs);
+            Map<String, String> row = new HashMap<>();
+            row.put("name",        name);
+            row.put("snippet",     snippet);
+            row.put("time",        time);
+            row.put("ts",          ts);
+            row.put("number",      num);
+            row.put("uuid",        uuid);
+            row.put("avatar_path", avatar);
+            row.put("unread",      String.valueOf(unread));
+            rows.add(row);
+        }
+        all.clear();
+        all.addAll(rows);
+        adapter.notifyDataSetChanged();
+        filter(search == null ? "" : search.getText().toString());
     }
 
     // ---------------- Self avatar ----------------
