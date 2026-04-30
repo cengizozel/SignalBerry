@@ -213,26 +213,33 @@ public class Chat extends AppCompatActivity {
             replyToTs   = 0;
             replyPreviewBar.setVisibility(android.view.View.GONE);
 
+            final String qt = replyItem == null ? null
+                    : (replyItem.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
+                       : (replyItem.text != null ? replyItem.text : ""));
+            final String qa = replyItem == null ? null : replyItem.from;
+
             MessageItem pending = new MessageItem("me", text, ST_PENDING);
             pending.serverTs = now;
-            if (replyItem != null) {
-                pending.quoteText   = replyItem.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
-                        : (replyItem.text != null ? replyItem.text : "");
-                pending.quoteAuthor = replyItem.from;
-            }
+            pending.quoteText   = qt;
+            pending.quoteAuthor = qa;
             rawItems.add(pending);
             rebuildDisplay();
 
             input.setText("");
             send.setEnabled(false);
             new Thread(() -> {
+                // Persist before sending so navigation away doesn't lose the message.
+                // confirmPending() will update server_ts + status when the WS echo arrives.
+                msgDb.upsert(chatDbKey, "out", "text", text, null, null, null, null,
+                        now, ST_PENDING, qt, qa);
                 boolean ok = sendOnce(text, replyItem, replyTs);
                 runOnUiThread(() -> {
                     send.setEnabled(true);
-                    if (ok) {
-                        markNewestMyPendingTo(ST_SENT);
+                    if (!ok) {
+                        msgDb.deleteByServerTs(chatDbKey, now);
+                        for (int i = rawItems.size() - 1; i >= 0; i--)
+                            if (rawItems.get(i).serverTs == now) { rawItems.remove(i); break; }
                         rebuildDisplay();
-                    } else {
                         Toast.makeText(Chat.this, "Send failed", Toast.LENGTH_SHORT).show();
                     }
                 });
@@ -518,16 +525,19 @@ public class Chat extends AppCompatActivity {
 
                     String msg = sent.optString("message", "").trim();
                     long   ts  = sent.optLong("timestamp", 0);
+                    dbg("SYNC-SENT msg=" + msg + " ts=" + ts);
                     if (!isEmpty(msg)) {
-                        // Update rawItem: status + real Signal ts (so reactions can match by ts)
+                        boolean matched = false;
                         for (int i = rawItems.size() - 1; i >= 0; i--) {
                             MessageItem m = rawItems.get(i);
                             if ("me".equals(m.from) && m.status == ST_PENDING && msg.equals(m.text)) {
                                 m.status = ST_SENT;
                                 m.serverTs = ts;
+                                matched = true;
                                 break;
                             }
                         }
+                        dbg("SYNC-SENT matched=" + matched + " confirmPending ts=" + ts);
                         msgDb.confirmPending(chatDbKey, msg, ts, ST_SENT);
                         changed = true;
                     }
@@ -554,13 +564,13 @@ public class Chat extends AppCompatActivity {
 
         JSONObject receipt = env.optJSONObject("receiptMessage");
         if (receipt != null) {
-            String type = receipt.optString("type", "").toUpperCase();
-            if ("DELIVERY".equals(type)) {
+            dbg("RECEIPT json=" + receipt);
+            if (receipt.optBoolean("isDelivery", false)) {
                 if (upgradeNewestMyStatusToAtLeast(ST_DELIVERED)) {
                     msgDb.upgradeAllOutStatus(chatDbKey, ST_DELIVERED);
                     changed = true;
                 }
-            } else if ("READ".equals(type) || "VIEWED".equals(type)) {
+            } else if (receipt.optBoolean("isRead", false) || receipt.optBoolean("isViewed", false)) {
                 if (upgradeNewestMyStatusToAtLeast(ST_READ)) {
                     msgDb.upgradeAllOutStatus(chatDbKey, ST_READ);
                     changed = true;

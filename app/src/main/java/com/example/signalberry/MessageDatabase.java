@@ -70,9 +70,9 @@ class MessageDatabase extends SQLiteOpenHelper {
             boolean exists = c.moveToFirst();
             c.close();
             if (exists) {
-                // bump status upward only
-                db.execSQL("UPDATE " + T + " SET status=MAX(status,?) WHERE peer_key=? AND dir=? AND server_ts=?",
-                        new Object[]{status, peerKey, dir, serverTs});
+                // bump status upward only, but never resurrect a deleted row
+                db.execSQL("UPDATE " + T + " SET status=MAX(status,?) WHERE peer_key=? AND dir=? AND server_ts=? AND status!=?",
+                        new Object[]{status, peerKey, dir, serverTs, ST_DELETED});
                 return -1;
             }
         } else if ("image".equals(msgType) && !isEmpty(attId)) {
@@ -135,16 +135,20 @@ class MessageDatabase extends SQLiteOpenHelper {
         } catch (Exception ignored) {}
     }
 
+    // -1 means locally deleted; row is kept so bridge re-delivery is deduped
+    static final int ST_DELETED = -1;
+
     void deleteMessages(String peerKey, java.util.Collection<Long> timestamps) {
         if (timestamps.isEmpty()) return;
         SQLiteDatabase db = getWritableDatabase();
         for (long ts : timestamps)
-            db.delete(T, "peer_key=? AND server_ts=?", new String[]{peerKey, String.valueOf(ts)});
+            db.execSQL("UPDATE " + T + " SET status=? WHERE peer_key=? AND server_ts=?",
+                    new Object[]{ST_DELETED, peerKey, ts});
     }
 
     void deleteByServerTs(String peerKey, long serverTs) {
-        getWritableDatabase().delete(T, "peer_key=? AND server_ts=?",
-                new String[]{peerKey, String.valueOf(serverTs)});
+        getWritableDatabase().execSQL("UPDATE " + T + " SET status=? WHERE peer_key=? AND server_ts=?",
+                new Object[]{ST_DELETED, peerKey, serverTs});
     }
 
     void upgradeAllOutStatus(String peerKey, int newStatus) {
@@ -165,7 +169,7 @@ class MessageDatabase extends SQLiteOpenHelper {
 
     List<MessageItem> getMessages(String peerKey) {
         Cursor c = getReadableDatabase().query(T, null,
-                "peer_key=?", new String[]{peerKey},
+                "peer_key=? AND status!=" + ST_DELETED, new String[]{peerKey},
                 null, null, "server_ts ASC, id ASC");
         List<MessageItem> list = new ArrayList<>();
         while (c.moveToNext()) list.add(toItem(c));
@@ -178,7 +182,7 @@ class MessageDatabase extends SQLiteOpenHelper {
         String sql =
                 "SELECT m.peer_key, m.dir, m.text, m.att_id, m.server_ts" +
                 " FROM " + T + " m" +
-                " INNER JOIN (SELECT peer_key, MAX(server_ts) mts FROM " + T + " GROUP BY peer_key) x" +
+                " INNER JOIN (SELECT peer_key, MAX(server_ts) mts FROM " + T + " WHERE status!=" + ST_DELETED + " GROUP BY peer_key) x" +
                 " ON m.peer_key=x.peer_key AND m.server_ts=x.mts" +
                 " ORDER BY m.server_ts DESC";
         Cursor c = getReadableDatabase().rawQuery(sql, null);
@@ -199,7 +203,7 @@ class MessageDatabase extends SQLiteOpenHelper {
 
     int countUnread(String peerKey, long readTs) {
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT COUNT(*) FROM " + T + " WHERE peer_key=? AND dir='in' AND server_ts>?",
+                "SELECT COUNT(*) FROM " + T + " WHERE peer_key=? AND dir='in' AND server_ts>? AND status!=" + ST_DELETED,
                 new String[]{peerKey, String.valueOf(readTs)});
         int n = 0;
         if (c.moveToFirst()) n = c.getInt(0);
