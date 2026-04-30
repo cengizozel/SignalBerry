@@ -56,6 +56,10 @@ public class Chat extends AppCompatActivity {
     private String histKey;      // JSON array of messages (text+images)
     private String lastTsKey;    // last seen serverTs for bridge catch-up (bridge only)
 
+    // Reply state
+    private MessageItem replyToItem = null;
+    private long        replyToTs   = 0;
+
     // UI
     private RecyclerView recycler;
     private ChatAdapter chatAdapter;
@@ -135,6 +139,26 @@ public class Chat extends AppCompatActivity {
         });
         recycler.setAdapter(chatAdapter);
 
+        // Reply: long-press any bubble → set reply target
+        android.widget.LinearLayout replyPreview = findViewById(R.id.reply_preview);
+        android.widget.TextView tvReplyPreview   = findViewById(R.id.tv_reply_preview);
+        android.widget.ImageButton btnCancelReply = findViewById(R.id.btn_cancel_reply);
+        chatAdapter.setOnReplyListener(pos -> {
+            if (pos < 0 || pos >= items.size()) return;
+            replyToItem = items.get(pos);
+            replyToTs   = replyToItem.serverTs;
+            String preview = replyToItem.type == MessageItem.TYPE_IMAGE
+                    ? "📷 Photo" : (replyToItem.text != null ? replyToItem.text : "");
+            String label = "me".equals(replyToItem.from) ? "You: " + preview : preview;
+            tvReplyPreview.setText(label);
+            replyPreview.setVisibility(android.view.View.VISIBLE);
+        });
+        btnCancelReply.setOnClickListener(v -> {
+            replyToItem = null;
+            replyToTs   = 0;
+            replyPreview.setVisibility(android.view.View.GONE);
+        });
+
         // Composer
         EditText input = findViewById(R.id.input_message);
         ImageButton attach = findViewById(R.id.btn_attach);
@@ -154,8 +178,22 @@ public class Chat extends AppCompatActivity {
             long now = System.currentTimeMillis();
             pushThreadHint(text, now);
 
+            // capture reply context then clear UI
+            final MessageItem replyItem = replyToItem;
+            final long        replyTs   = replyToTs;
+            replyToItem = null;
+            replyToTs   = 0;
+            replyPreview.setVisibility(android.view.View.GONE);
+
             // optimistic pending bubble
-            items.add(new MessageItem("me", text, ST_PENDING));
+            MessageItem pending = new MessageItem("me", text, ST_PENDING);
+            pending.serverTs = now;
+            if (replyItem != null && !text.isEmpty()) {
+                pending.quoteText   = replyItem.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
+                        : (replyItem.text != null ? replyItem.text : "");
+                pending.quoteAuthor = replyItem.from;
+            }
+            items.add(pending);
             chatAdapter.notifyItemInserted(items.size() - 1);
             recycler.scrollToPosition(items.size() - 1);
             saveHistory();
@@ -164,7 +202,7 @@ public class Chat extends AppCompatActivity {
             send.setEnabled(false);
             new Thread(new Runnable() {
                 @Override public void run() {
-                    boolean ok = sendOnce(text);
+                    boolean ok = sendOnce(text, replyItem, replyTs);
                     runOnUiThread(new Runnable() {
                         @Override public void run() {
                             send.setEnabled(true);
@@ -203,6 +241,7 @@ public class Chat extends AppCompatActivity {
         prefs.edit()
                 .putLong("read_ts_" + chatKey, System.currentTimeMillis())
                 .putString("last_read_peer", chatKey)
+                .putString("open_chat_peer", chatKey)
                 .apply();
     }
 
@@ -210,6 +249,7 @@ public class Chat extends AppCompatActivity {
         super.onPause();
         closeWebSocket();
         stopBridgePolling();
+        prefs.edit().remove("open_chat_peer").apply();
     }
 
     // -------------------- ATTACHMENT PICK --------------------
@@ -276,7 +316,7 @@ public class Chat extends AppCompatActivity {
     }
 
     // -------------------- SEND --------------------
-    private boolean sendOnce(String text) {
+    private boolean sendOnce(String text, MessageItem replyTo, long replyTs) {
         try {
             String url = baseSignal + "/v2/send";
             JSONObject body = new JSONObject();
@@ -285,6 +325,15 @@ public class Chat extends AppCompatActivity {
             JSONArray rcpts = new JSONArray();
             if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
             body.put("recipients", rcpts);
+            if (replyTo != null && replyTs > 0) {
+                body.put("quote_timestamp", replyTs);
+                String qAuthor = "me".equals(replyTo.from) ? myNumber
+                        : (notEmpty(peerNumber) ? peerNumber : peerUuid);
+                body.put("quote_author", qAuthor == null ? "" : qAuthor);
+                String qText = replyTo.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
+                        : (replyTo.text != null ? replyTo.text : "");
+                body.put("quote_message", qText);
+            }
             int code = httpPostJson(url, body.toString());
             return code >= 200 && code < 300;
         } catch (Exception e) { return false; }
@@ -372,8 +421,24 @@ public class Chat extends AppCompatActivity {
                 JSONArray atts = data.optJSONArray("attachments");
                 boolean hasImage = atts != null && atts.length() > 0;
 
+                // Parse quote (reply) if present
+                String quoteText   = null;
+                String quoteAuthor = null;
+                JSONObject quote = data.optJSONObject("quote");
+                if (quote != null) {
+                    quoteText = quote.optString("text", "");
+                    String qAuthorNum = quote.optString("authorNumber", quote.optString("author", ""));
+                    boolean qFromMe = notEmpty(myNumber) && digits(qAuthorNum).equals(digits(myNumber));
+                    quoteAuthor = qFromMe ? "me" : "peer";
+                    if (quoteText.isEmpty()) quoteText = "📷 Photo";
+                }
+
                 if (!isEmpty(text) && !hasImage) {
-                    items.add(new MessageItem("peer", text, ST_DELIVERED));
+                    MessageItem item = new MessageItem("peer", text, ST_DELIVERED);
+                    item.serverTs    = ts;
+                    item.quoteText   = quoteText;
+                    item.quoteAuthor = quoteAuthor;
+                    items.add(item);
                     changed = true;
                     bumpLastTs(ts);
                 }
@@ -385,8 +450,11 @@ public class Chat extends AppCompatActivity {
                         String cid  = a.optString("id", "");
                         String mime = a.optString("contentType", "");
                         if (!isEmpty(cid) && mime != null && mime.startsWith("image/")) {
-                            // text becomes caption; empty caption = null
-                            items.add(new MessageItem("peer", cid, mime, isEmpty(text) ? null : text, ST_DELIVERED));
+                            MessageItem item = new MessageItem("peer", cid, mime, isEmpty(text) ? null : text, ST_DELIVERED);
+                            item.serverTs    = ts;
+                            item.quoteText   = quoteText;
+                            item.quoteAuthor = quoteAuthor;
+                            items.add(item);
                             changed = true;
                             bumpLastTs(ts);
                         }
@@ -486,17 +554,22 @@ public class Chat extends AppCompatActivity {
                         if (isEmpty(text)) continue; // bridge stores text only
 
                         if ("in".equals(dir)) {
-                            // append if not already present (simple contains check)
                             if (!alreadyHasIncomingText(text)) {
-                                items.add(new MessageItem("peer", text, Math.max(st, ST_DELIVERED)));
+                                MessageItem item = new MessageItem("peer", text, Math.max(st, ST_DELIVERED));
+                                item.serverTs = ts;
+                                items.add(item);
                                 changed = true;
+                            } else if (ts > 0) {
+                                backfillServerTs("peer", text, ts);
                             }
                         } else if ("out".equals(dir)) {
-                            // try to find a matching pending/older "me" text to upgrade
                             if (!upgradeExistingMyTextTo(text, st)) {
-                                // append (message sent on another device)
-                                items.add(new MessageItem("me", text, st));
+                                MessageItem item = new MessageItem("me", text, st);
+                                item.serverTs = ts;
+                                items.add(item);
                                 changed = true;
+                            } else if (ts > 0) {
+                                backfillServerTs("me", text, ts);
                             }
                         }
                     }
@@ -558,6 +631,19 @@ public class Chat extends AppCompatActivity {
         return false;
     }
 
+    private void backfillServerTs(String from, String text, long ts) {
+        if (isEmpty(text) || ts <= 0) return;
+        int limit = "peer".equals(from) ? Math.max(0, items.size() - 50) : 0;
+        for (int i = items.size() - 1; i >= limit; i--) {
+            MessageItem m = items.get(i);
+            if (from.equals(m.from) && m.type == MessageItem.TYPE_TEXT
+                    && text.equals(m.text) && m.serverTs == 0) {
+                m.serverTs = ts;
+                return;
+            }
+        }
+    }
+
     private boolean alreadyHasIncomingText(String text) {
         if (isEmpty(text)) return true;
         for (int i = items.size() - 1; i >= 0 && i >= items.size() - 50; i--) {
@@ -592,20 +678,28 @@ public class Chat extends AppCompatActivity {
                 String from = o.optString("from", "peer");
                 int status  = o.optInt("status", ST_DELIVERED);
                 String type = o.optString("type", "text");
+                MessageItem item;
                 if ("image".equals(type)) {
                     String cid      = o.optString("attId", "");
                     String mime     = o.optString("mime", "");
                     String caption  = o.optString("caption", "");
                     String localUri = o.optString("localUri", "");
                     if (!localUri.isEmpty()) {
-                        items.add(new MessageItem(from, localUri, caption.isEmpty() ? null : caption, status, true));
+                        item = new MessageItem(from, localUri, caption.isEmpty() ? null : caption, status, true);
                     } else {
-                        items.add(new MessageItem(from, cid, mime, caption.isEmpty() ? null : caption, status));
+                        item = new MessageItem(from, cid, mime, caption.isEmpty() ? null : caption, status);
                     }
                 } else {
                     String text = o.optString("text", "");
-                    items.add(new MessageItem(from, text, status));
+                    item = new MessageItem(from, text, status);
                 }
+                item.serverTs    = o.optLong("serverTs", 0);
+                String qt = o.optString("quoteText", "");
+                if (!qt.isEmpty()) {
+                    item.quoteText   = qt;
+                    item.quoteAuthor = o.optString("quoteAuthor", "peer");
+                }
+                items.add(item);
             }
             chatAdapter.notifyDataSetChanged();
             if (!items.isEmpty()) recycler.scrollToPosition(items.size() - 1);
@@ -619,6 +713,11 @@ public class Chat extends AppCompatActivity {
                 JSONObject o = new JSONObject();
                 o.put("from", m.from);
                 o.put("status", m.status);
+                o.put("serverTs", m.serverTs);
+                if (m.quoteText != null && !m.quoteText.isEmpty()) {
+                    o.put("quoteText",   m.quoteText);
+                    o.put("quoteAuthor", m.quoteAuthor != null ? m.quoteAuthor : "peer");
+                }
                 if (m.type == MessageItem.TYPE_IMAGE) {
                     o.put("type", "image");
                     o.put("attId",    m.attachmentId == null ? "" : m.attachmentId);

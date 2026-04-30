@@ -9,6 +9,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
@@ -25,11 +26,13 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private static final int VIEW_ME_IMAGE   = 4;
 
     interface OnImageClickListener { void onImageClick(int position); }
+    interface OnReplyListener      { void onReply(int position); }
 
     private final List<MessageItem> data;
     private final String restBase;
     private final ImageLoader loader;
     private OnImageClickListener imageClickListener;
+    private OnReplyListener replyListener;
 
     ChatAdapter(List<MessageItem> data, String restBase, Context ctx) {
         this.data = data;
@@ -38,6 +41,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     }
 
     void setOnImageClickListener(OnImageClickListener l) { this.imageClickListener = l; }
+    void setOnReplyListener(OnReplyListener l)           { this.replyListener = l; }
 
     @Override public int getItemViewType(int position) {
         MessageItem m = data.get(position);
@@ -63,41 +67,69 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
         MessageItem m = data.get(pos);
-        if (h instanceof MeTextVH) ((MeTextVH) h).bind(m);
-        else if (h instanceof PeerTextVH) ((PeerTextVH) h).bind(m);
-        else if (h instanceof MeImageVH)  ((MeImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
-        else if (h instanceof PeerImageVH)((PeerImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
+        h.itemView.setOnLongClickListener(v -> {
+            if (replyListener != null) { replyListener.onReply(pos); return true; }
+            return false;
+        });
+        if (h instanceof MeTextVH)    ((MeTextVH) h).bind(m);
+        else if (h instanceof PeerTextVH)  ((PeerTextVH) h).bind(m);
+        else if (h instanceof MeImageVH)   ((MeImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
+        else if (h instanceof PeerImageVH) ((PeerImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
     }
 
     @Override public int getItemCount() { return data.size(); }
 
     // ---- text VHs ----
     static class PeerTextVH extends RecyclerView.ViewHolder {
-        final TextView tvMessage;
-        PeerTextVH(@NonNull View v) { super(v); tvMessage = v.findViewById(R.id.tvMessage); }
-        void bind(MessageItem m) { tvMessage.setText(m.text == null ? "" : m.text); }
+        final LinearLayout quoteBlock;
+        final View quoteLine;
+        final TextView tvQuote, tvMessage;
+        PeerTextVH(@NonNull View v) {
+            super(v);
+            quoteBlock = v.findViewById(R.id.quoteBlock);
+            quoteLine  = v.findViewById(R.id.quoteLine);
+            tvQuote    = v.findViewById(R.id.tvQuote);
+            tvMessage  = v.findViewById(R.id.tvMessage);
+        }
+        void bind(MessageItem m) {
+            tvMessage.setText(m.text == null ? "" : m.text);
+            bindQuote(m, quoteBlock, quoteLine, tvQuote, false);
+        }
     }
+
     static class MeTextVH extends RecyclerView.ViewHolder {
-        final TextView tvMessage, tvStatus;
+        final LinearLayout quoteBlock;
+        final View quoteLine;
+        final TextView tvQuote, tvMessage, tvStatus;
         MeTextVH(@NonNull View v) {
             super(v);
-            tvMessage = v.findViewById(R.id.tvMessage);
-            tvStatus  = v.findViewById(R.id.tvStatus);
+            quoteBlock = v.findViewById(R.id.quoteBlock);
+            quoteLine  = v.findViewById(R.id.quoteLine);
+            tvQuote    = v.findViewById(R.id.tvQuote);
+            tvMessage  = v.findViewById(R.id.tvMessage);
+            tvStatus   = v.findViewById(R.id.tvStatus);
         }
         void bind(MessageItem m) {
             tvMessage.setText(m.text == null ? "" : m.text);
             tvStatus.setText(statusMark(m.status));
+            bindQuote(m, quoteBlock, quoteLine, tvQuote, true);
         }
     }
 
     // ---- image VHs ----
     static class PeerImageVH extends RecyclerView.ViewHolder {
+        final LinearLayout quoteBlock;
+        final View quoteLine;
+        final TextView tvQuote;
         final ImageView iv;
         final TextView tvCaption;
         PeerImageVH(@NonNull View v) {
             super(v);
-            iv = v.findViewById(R.id.ivImage);
-            tvCaption = v.findViewById(R.id.tvCaption);
+            quoteBlock = v.findViewById(R.id.quoteBlock);
+            quoteLine  = v.findViewById(R.id.quoteLine);
+            tvQuote    = v.findViewById(R.id.tvQuote);
+            iv         = v.findViewById(R.id.ivImage);
+            tvCaption  = v.findViewById(R.id.tvCaption);
         }
         void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
             String src = m.localUri != null ? m.localUri : base + "/v1/attachments/" + m.attachmentId;
@@ -111,17 +143,25 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             } else {
                 tvCaption.setVisibility(View.GONE);
             }
+            bindQuote(m, quoteBlock, quoteLine, tvQuote, false);
         }
     }
+
     static class MeImageVH extends RecyclerView.ViewHolder {
+        final LinearLayout quoteBlock;
+        final View quoteLine;
+        final TextView tvQuote;
         final ImageView iv;
         final TextView tvStatus;
         final TextView tvCaption;
         MeImageVH(@NonNull View v) {
             super(v);
-            iv = v.findViewById(R.id.ivImage);
-            tvStatus = v.findViewById(R.id.tvStatus);
-            tvCaption = v.findViewById(R.id.tvCaption);
+            quoteBlock = v.findViewById(R.id.quoteBlock);
+            quoteLine  = v.findViewById(R.id.quoteLine);
+            tvQuote    = v.findViewById(R.id.tvQuote);
+            iv         = v.findViewById(R.id.ivImage);
+            tvStatus   = v.findViewById(R.id.tvStatus);
+            tvCaption  = v.findViewById(R.id.tvCaption);
         }
         void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
             String src = m.localUri != null ? m.localUri : base + "/v1/attachments/" + m.attachmentId;
@@ -136,6 +176,19 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             } else {
                 tvCaption.setVisibility(View.GONE);
             }
+            bindQuote(m, quoteBlock, quoteLine, tvQuote, true);
+        }
+    }
+
+    private static void bindQuote(MessageItem m, LinearLayout block, View line, TextView tv, boolean isMeBubble) {
+        if (m.quoteText != null && !m.quoteText.isEmpty()) {
+            block.setVisibility(View.VISIBLE);
+            boolean quoteFromMe = "me".equals(m.quoteAuthor);
+            line.setBackgroundColor(quoteFromMe ? 0xFF4CAF50 : 0xFF2196F3);
+            String prefix = quoteFromMe ? "You: " : "";
+            tv.setText(prefix + m.quoteText);
+        } else {
+            block.setVisibility(View.GONE);
         }
     }
 

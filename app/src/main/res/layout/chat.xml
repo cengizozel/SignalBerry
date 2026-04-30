@@ -33,6 +33,43 @@
         android:padding="8dp"
         android:clipToPadding="false" />
 
+    <!-- Reply preview (shown when user long-presses a message) -->
+    <LinearLayout
+        android:id="@+id/reply_preview"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingStart="12dp" android:paddingEnd="4dp"
+        android:paddingTop="6dp" android:paddingBottom="6dp"
+        android:background="#F0F0F0"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="3dp"
+            android:layout_height="32dp"
+            android:background="#2196F3"
+            android:layout_marginEnd="8dp"/>
+
+        <TextView
+            android:id="@+id/tv_reply_preview"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:textSize="13sp"
+            android:textColor="#555555"/>
+
+        <ImageButton
+            android:id="@+id/btn_cancel_reply"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:background="@android:color/transparent"
+            android:contentDescription="Cancel reply"/>
+    </LinearLayout>
+
     <!-- Composer (unchanged) -->
     <LinearLayout
         android:layout_width="match_parent"

@@ -22,6 +22,25 @@
         android:background="@drawable/bg_bubble_me"
         android:maxWidth="260dp">
 
+        <LinearLayout
+            android:id="@+id/quoteBlock"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="#CCDDCC"
+            android:paddingTop="4dp" android:paddingBottom="4dp" android:paddingEnd="6dp"
+            android:visibility="gone">
+            <View
+                android:id="@+id/quoteLine"
+                android:layout_width="3dp" android:layout_height="match_parent"
+                android:layout_marginEnd="6dp"
+                android:background="#4CAF50"/>
+            <TextView
+                android:id="@+id/tvQuote"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:maxLines="2" android:ellipsize="end"
+                android:textSize="12sp" android:textColor="#444444"/>
+        </LinearLayout>
+
         <ImageView
             android:id="@+id/ivImage"
             android:layout_width="wrap_content"
