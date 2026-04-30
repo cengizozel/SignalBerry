@@ -1,74 +1,96 @@
-# SignalBerry (WIP)
+# SignalBerry
 
-> **Not ready for regular use.** Can send & receive messages via a local Signal REST API, but expect bugs and missing features.
+> **Work in progress.** A Signal messenger client for BlackBerry Android devices.
+
+Built on top of [signal-cli](https://github.com/AsamK/signal-cli) via the [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) Docker image, with a companion [SignalBerry Bridge](https://github.com/cengizozel/SignalBerryBridge) for offline message persistence.
+
+## Architecture
+
+```
+Signal Network
+     │
+     ▼
+signal-cli-rest-api  (Docker, port 5000)
+     │  WebSocket /v1/receive
+     ▼
+SignalBerry Bridge   (Docker, port 9099)
+     │  SQLite — persists messages offline
+     ▼
+SignalBerry Android  (HTTP polling + WebSocket)
+```
+
+The Android app connects directly to signal-cli-rest-api for real-time messages (WebSocket) and sending. The bridge runs alongside it and stores every message to SQLite so the app can catch up on messages received while it was closed.
 
 ## Features
 
-* **Server Connect**: enter API host (e.g., `HOST:PORT`) and your Signal number; saved locally.
-* **Contacts**: fetched from the Signal REST API.
-* **Realtime Chat**: WebSocket receive (json-rpc mode), send via `/v2/send`.
-* **Message Status**: 🕒 pending → ✓ sent → ✓✓ delivered/read.
-* **UI**: bubble chat with RecyclerView; simple, fast, minimal.
-* **Persistence**: per-chat history stored locally.
+- **Realtime messaging** — WebSocket receive + send via `/v2/send`
+- **Offline catch-up** — bridge polling delivers messages missed while the app was closed
+- **Message status** — 🕒 pending → ✓ sent → ✓✓ delivered → ✓✓ read
+- **Replies** — long-press a message to quote-reply
+- **Emoji reactions** — long-press to react; reactions sync across devices
+- **Images** — send from gallery, receive and view full-screen
+- **Delete messages** — long-press → Delete, or multi-select and bulk delete; deletions sync from other devices
+- **Date separators** — messages grouped by day in the chat view
+- **Light / dark mode** — toggle in Settings; persists across launches
+- **Conversation list** — shows latest message snippet, timestamp, and unread badge per contact
+- **Search** — filter contacts in the message list
+- **New chat** — start a conversation with any contact from your Signal account
+- **Debug log** — toggleable overlay showing live internal logs (Settings → Debug log)
 
 ## Setup
 
-### 1) Run the Signal REST API (Docker)
+You need two Docker containers running on a machine reachable from your Android device. The easiest way is to use the [SignalBerry Bridge](https://github.com/cengizozel/SignalBerryBridge) repo, which ships a `docker-compose.yml` that starts both.
 
-Use **one** of the following.
-
-**docker-compose.yml**
-
-```yaml
-version: "3"
-services:
-  signal-api:
-    image: bbernhard/signal-cli-rest-api:latest
-    container_name: signal-api
-    restart: always
-    ports:
-      - "5000:8080"              # map HOST:5000 -> container:8080
-    environment:
-      - MODE=json-rpc            # WebSocket mode (recommended)
-      - LOG_LEVEL=debug          # optional
-    volumes:
-      - $HOME/.local/share/signal-api:/home/.local/share/signal-cli
-```
-
-Start it:
+### 1. Clone the bridge repo
 
 ```bash
-docker compose up -d
+git clone https://github.com/cengizozel/SignalBerryBridge
+cd SignalBerryBridge
 ```
 
-**Or** run directly:
+### 2. Set your Signal number
+
+Create a `.env` file in the bridge directory:
+
+```
+SIGNAL_NUMBER=+12223334444
+```
+
+### 3. Start the stack
 
 ```bash
-docker run -d --name signal-api --restart=always \
-  -p 5000:8080 \
-  -v $HOME/.local/share/signal-api:/home/.local/share/signal-cli \
-  -e MODE=json-rpc \
-  -e LOG_LEVEL=debug \
-  bbernhard/signal-cli-rest-api:latest
+docker compose up -d --build
 ```
 
-**Link the container as a device**
+This starts:
+- `signal-api` — signal-cli-rest-api on port `5000`
+- `signal-bridge` — SignalBerry Bridge on port `9099`
 
-1. On the machine running Docker, open:
-   `http://HOST:PORT/v1/qrcodelink?device_name=signal-api`
-2. In Signal on your phone: **Settings → Linked devices → “+” → scan** the QR code.
+### 4. Link your Signal account
 
-### 2) Run the Android app
+Open this URL in a browser on the Docker host:
 
-1. Open the project in Android Studio and run on a device on the same network as the Docker host.
-2. On first launch:
+```
+http://YOUR_HOST:5000/v1/qrcodelink?device_name=signal-api
+```
 
-    * Enter **API Host** as `HOST:PORT` (the address you exposed above).
-    * Enter **your Signal phone number** (E.164 format).
-    * Tap **Connect**, then choose a contact and start chatting.
+On your phone: **Signal → Settings → Linked Devices → "+" → scan the QR code.**
+
+Verify it worked:
+
+```bash
+curl http://YOUR_HOST:5000/v1/accounts
+```
+
+### 5. Connect the Android app
+
+1. Open SignalBerry on your device.
+2. Enter `YOUR_HOST:5000` as the **API Host** and your Signal number in E.164 format.
+3. Tap **Connect** — your contacts will load and you can start chatting.
 
 ## Notes
 
-* Intended for **local development** only; no TLS or authentication.
-* No background notifications; app must be open to receive.
-* Attachments, groups, avatars, and rich features are not implemented yet.
+- The device running Docker and the Android device must be on the same network (or the Docker ports must be reachable).
+- No TLS or authentication — intended for local / trusted network use only.
+- No background notifications; the app must be open to receive messages in real time. Messages received while closed are delivered via bridge polling on next open.
+- Groups, voice/video, disappearing messages, and stickers are not supported.
