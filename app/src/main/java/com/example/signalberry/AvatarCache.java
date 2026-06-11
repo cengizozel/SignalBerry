@@ -88,6 +88,41 @@ class AvatarCache {
         }
     }
 
+    /** Group avatar by send token. Negative-cached: most groups have none and
+     *  re-asking on every list bind would hammer the API. */
+    Bitmap fetchGroup(String groupKey, String token) {
+        if (groupKey == null || token == null || token.isEmpty()) return null;
+        String key = "g_" + Integer.toHexString(groupKey.hashCode());
+        synchronized (mem) {
+            if (mem.containsKey(key)) return mem.get(key);
+        }
+        File f = new File(dir, key);
+        if (f.exists() && System.currentTimeMillis() - f.lastModified() < TTL_MS) {
+            Bitmap bm = BitmapFactory.decodeFile(f.getAbsolutePath());
+            if (bm != null) { synchronized (mem) { mem.put(key, bm); } return bm; }
+        }
+        File none = new File(dir, key + ".none");
+        if (none.exists() && System.currentTimeMillis() - none.lastModified() < TTL_MS)
+            return null;
+        try {
+            String url = baseSignal + "/v1/groups/" + URLEncoder.encode(myNumber, "UTF-8")
+                    + "/" + URLEncoder.encode(token, "UTF-8") + "/avatar";
+            byte[] bytes = getBytes(url);
+            if (bytes == null || bytes.length == 0) {
+                //noinspection ResultOfMethodCallIgnored
+                none.createNewFile();
+                none.setLastModified(System.currentTimeMillis());
+                return null;
+            }
+            try (FileOutputStream fos = new FileOutputStream(f)) { fos.write(bytes); }
+            Bitmap bm = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            if (bm != null) synchronized (mem) { mem.put(key, bm); }
+            return bm;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     void invalidate(String number) {
         String key = Utils.digits(number);
         if (key.isEmpty()) key = number;

@@ -90,13 +90,34 @@ class MessagesAdapter extends BaseAdapter {
 
         int sizePx = dpToPx(44);
         if ("1".equals(item.get("is_group"))) {
+            final String gkey = item.get("group_key");
+            final String gtoken = item.get("group_token");
+            Bitmap cached = gkey != null ? BIND_CACHE.get("gav|" + gkey) : null;
+            if (cached != null) {
+                ivAvatar.setImageBitmap(cached);
+                ivAvatar.setTag(gkey);
+                return convertView;
+            }
             Bitmap grp = BIND_CACHE.get("groupav|" + sizePx);
             if (grp == null) {
                 grp = groupCircle(sizePx);
                 BIND_CACHE.put("groupav|" + sizePx, grp);
             }
             ivAvatar.setImageBitmap(grp);
-            ivAvatar.setTag("groupav");
+            ivAvatar.setTag(gkey != null ? gkey : "groupav");
+            if (!demoMode && avatarCache != null && gkey != null
+                    && gtoken != null && !gtoken.isEmpty()) {
+                final int size = sizePx;
+                BIND_EXEC.execute(() -> {
+                    Bitmap raw = avatarCache.fetchGroup(gkey, gtoken);
+                    if (raw == null) return;
+                    Bitmap circle = circleCrop(raw, size);
+                    BIND_CACHE.put("gav|" + gkey, circle);
+                    handler.post(() -> {
+                        if (gkey.equals(ivAvatar.getTag())) ivAvatar.setImageBitmap(circle);
+                    });
+                });
+            }
             return convertView;
         }
         if ("1".equals(item.get("is_self"))) {

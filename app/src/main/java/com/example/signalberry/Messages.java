@@ -398,6 +398,7 @@ public class Messages extends AppCompatActivity {
                 if (key.startsWith("group:")) {
                     row.put("is_group", "1");
                     row.put("group_key", key);
+                    row.put("group_token", prefs.getString("group_sendid_" + key, ""));
                 }
                 row.put("unread",      String.valueOf(unread));
                 rows.add(row);
@@ -428,6 +429,7 @@ public class Messages extends AppCompatActivity {
                 row.put("avatar_path", "");
                 row.put("is_group", "1");
                 row.put("group_key", gkey);
+                row.put("group_token", prefs.getString(prefKey, ""));
                 rows.add(row);
             }
             runOnUiThread(() -> {

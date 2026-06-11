@@ -904,6 +904,15 @@ public class Chat extends AppCompatActivity {
         final int size = (int) (30 * getResources().getDisplayMetrics().density + 0.5f);
         if (isGroup) {
             iv.setImageBitmap(MessagesAdapter.groupCircle(size));
+            final String token = prefs.getString("group_sendid_" + chatDbKey, "");
+            if (isEmpty(token)) return;
+            new Thread(() -> {
+                android.graphics.Bitmap raw = new AvatarCache(getCacheDir(), baseSignal, myNumber)
+                        .fetchGroup(chatDbKey, token);
+                if (raw == null) return;
+                final android.graphics.Bitmap circle = MessagesAdapter.circleCrop(raw, size);
+                runOnUiThread(() -> iv.setImageBitmap(circle));
+            }).start();
             return;
         }
         if (notEmpty(myNumber) && chatDbKey.equals(digits(myNumber))) {
