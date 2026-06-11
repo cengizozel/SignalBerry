@@ -2,6 +2,8 @@ package com.example.signalberry;
 
 import android.content.Context;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.util.LruCache;
@@ -186,9 +188,11 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     class AudioVH extends RecyclerView.ViewHolder {
         final LinearLayout quoteBlock;
         final View quoteLine, playerRow;
-        final TextView tvQuote, btnPlay, tvDur, tvSpeed, tvStamp, tvReactions;
+        final TextView tvQuote, tvDur, tvSpeed, tvStamp, tvReactions;
+        final ImageView btnPlay;
         final WaveformView wave;
         final boolean me;
+        final int iconColor;
         AudioVH(@NonNull View v, boolean me) {
             super(v);
             this.me     = me;
@@ -205,6 +209,34 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             // me-bubble bg is dark blue: white bars read better than blue
             if (me) wave.setColors(0xFFFFFFFF, 0x66FFFFFF);
             else    wave.setColors(0xFF2196F3, 0x66888888);
+            iconColor = me ? 0xFFFFFFFF : 0xFF2196F3;
+        }
+
+        /** Icons drawn in code — the device font has no reliable pause glyph. */
+        private Bitmap transportIcon(boolean pause) {
+            String key = "vp|" + pause + "|" + iconColor;
+            Bitmap b = BIND_ICON_CACHE.get(key);
+            if (b != null) return b;
+            int s = (int) (24 * itemView.getResources().getDisplayMetrics().density);
+            b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(b);
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setColor(iconColor);
+            if (pause) {
+                float bw = s * 0.22f, gap = s * 0.18f;
+                float left = (s - 2 * bw - gap) / 2f;
+                c.drawRect(left, s * 0.15f, left + bw, s * 0.85f, p);
+                c.drawRect(left + bw + gap, s * 0.15f, left + 2 * bw + gap, s * 0.85f, p);
+            } else {
+                android.graphics.Path tri = new android.graphics.Path();
+                tri.moveTo(s * 0.28f, s * 0.12f);
+                tri.lineTo(s * 0.88f, s * 0.50f);
+                tri.lineTo(s * 0.28f, s * 0.88f);
+                tri.close();
+                c.drawPath(tri, p);
+            }
+            BIND_ICON_CACHE.put(key, b);
+            return b;
         }
         void bind(MessageItem m) {
             final AudioUi ui = audioUi;
@@ -222,7 +254,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvDur.setTypeface(null, android.graphics.Typeface.NORMAL);
             playerRow.setVisibility(View.VISIBLE);
             boolean active = ui != null && ui.isActive(m);
-            btnPlay.setText(ui != null && ui.isPlaying(m) ? "\u25AA\u25AA" : "\u25B6");
+            btnPlay.setImageBitmap(transportIcon(ui != null && ui.isPlaying(m)));
             wave.setLevels(ui != null ? ui.wave(m) : null);
             wave.setProgress(active ? ui.progress(m) : 0f);
             wave.setSeekable(active);
@@ -400,6 +432,9 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     /** Tick states: pending dim ellipsis, sent single, delivered double (dim),
      *  read double (accent blue), failed red cross. Text glyphs (U+2713/2715)
      *  render fine on Android 4.3; clock/emoji glyphs do not. */
+    private static final android.util.LruCache<String, Bitmap> BIND_ICON_CACHE =
+            new android.util.LruCache<>(8);
+
     private static void bindStatus(MessageItem m, TextView tv) {
         String when = com.example.signalberry.Utils.formatBubbleTime(m.serverTs);
         String at = when.isEmpty() ? "" : when + "  ";

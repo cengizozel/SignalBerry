@@ -11,10 +11,10 @@ import java.io.File;
 import java.nio.ByteBuffer;
 
 /**
- * Minimal voice-note player: MediaCodec sync decode -> AudioTrack stream.
- * Built this way because MediaPlayer has no speed control before API 23;
- * AudioTrack.setPlaybackRate works back to API 18. Speed shifts pitch with
- * tempo (tape-style) — true time-stretch is too heavy for a Q10.
+ * Minimal voice-note player: MediaCodec sync decode -> TimeStretcher (WSOLA,
+ * pitch-preserving speed control) -> AudioTrack stream. Built this way because
+ * MediaPlayer has no speed control before API 23 and the Q10 is API 18.
+ * Output is always mono: stereo input is downmixed before stretching.
  */
 final class VoiceNotePlayer {
 
@@ -74,12 +74,7 @@ final class VoiceNotePlayer {
         }
     }
 
-    void setSpeed(float s) {
-        speed = s;
-        AudioTrack t = track;
-        if (t != null && sampleRate > 0)
-            try { t.setPlaybackRate((int) (sampleRate * s)); } catch (Exception ignored) {}
-    }
+    void setSpeed(float s) { speed = s; }
 
     void release() {
         released = true;
@@ -90,6 +85,10 @@ final class VoiceNotePlayer {
         MediaExtractor ex = new MediaExtractor();
         MediaCodec codec = null;
         boolean completed = false;
+        TimeStretcher stretcher = null;
+        int channels = 1;
+        short[] mono = new short[4096];
+        byte[] outBytes = new byte[8192];
         try {
             ex.setDataSource(file.getAbsolutePath());
             int ti = -1;
@@ -118,6 +117,7 @@ final class VoiceNotePlayer {
                     synchronized (lock) { target = seekUs; seekUs = -1; }
                     ex.seekTo(target, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
                     codec.flush();
+                    if (stretcher != null) stretcher.flush();
                     inEos = false;
                     posUs = target;
                     AudioTrack t = track;
@@ -151,16 +151,44 @@ final class VoiceNotePlayer {
                 }
                 int ob = codec.dequeueOutputBuffer(bi, 10_000);
                 if (ob == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    setupTrack(codec.getOutputFormat());
+                    MediaFormat of = codec.getOutputFormat();
+                    channels = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                    setupTrack(of);
+                    stretcher = new TimeStretcher(sampleRate);
                 } else if (ob == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
                     outs = codec.getOutputBuffers();
                 } else if (ob >= 0) {
                     if (bi.size > 0 && track != null) {
-                        byte[] pcm = new byte[bi.size];
-                        outs[ob].position(bi.offset);
-                        outs[ob].get(pcm, 0, bi.size);
-                        outs[ob].clear();
-                        track.write(pcm, 0, bi.size);
+                        // bytes -> mono shorts (downmix stereo)
+                        ByteBuffer bb = outs[ob];
+                        bb.position(bi.offset);
+                        int nSamples = bi.size / 2 / channels;
+                        if (mono.length < nSamples) mono = new short[nSamples * 2];
+                        for (int i = 0; i < nSamples; i++) {
+                            int base = bi.offset + i * 2 * channels;
+                            int s0 = (short) ((bb.get(base) & 0xFF) | (bb.get(base + 1) << 8));
+                            if (channels == 2) {
+                                int s1 = (short) ((bb.get(base + 2) & 0xFF) | (bb.get(base + 3) << 8));
+                                s0 = (s0 + s1) / 2;
+                            }
+                            mono[i] = (short) s0;
+                        }
+                        bb.clear();
+                        float sp = speed;
+                        short[] play = mono;
+                        int playLen = nSamples;
+                        if (stretcher != null && Math.abs(sp - 1f) > 0.01f) {
+                            play = stretcher.process(mono, nSamples, sp);
+                            playLen = stretcher.outLength();
+                        }
+                        if (playLen > 0) {
+                            if (outBytes.length < playLen * 2) outBytes = new byte[playLen * 2];
+                            for (int i = 0; i < playLen; i++) {
+                                outBytes[i * 2]     = (byte) (play[i] & 0xFF);
+                                outBytes[i * 2 + 1] = (byte) (play[i] >> 8);
+                            }
+                            track.write(outBytes, 0, playLen * 2);
+                        }
                         posUs = bi.presentationTimeUs;
                     }
                     if ((bi.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outEos = true;
@@ -169,6 +197,7 @@ final class VoiceNotePlayer {
             }
             completed = outEos && !released;
         } catch (Exception e) {
+            android.util.Log.e("VoiceNote", "playback failed", e);
             if (!released) main.post(listener::onError);
         } finally {
             try { if (codec != null) { codec.stop(); codec.release(); } } catch (Exception ignored) {}
@@ -189,13 +218,12 @@ final class VoiceNotePlayer {
 
     private void setupTrack(MediaFormat of) {
         sampleRate = of.getInteger(MediaFormat.KEY_SAMPLE_RATE);
-        int ch = of.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-        int chMask = ch == 1 ? AudioFormat.CHANNEL_OUT_MONO : AudioFormat.CHANNEL_OUT_STEREO;
-        int minBuf = AudioTrack.getMinBufferSize(sampleRate, chMask, AudioFormat.ENCODING_PCM_16BIT);
-        AudioTrack t = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, chMask,
-                AudioFormat.ENCODING_PCM_16BIT, Math.max(minBuf * 2, 16384),
-                AudioTrack.MODE_STREAM);
-        try { t.setPlaybackRate((int) (sampleRate * speed)); } catch (Exception ignored) {}
+        // output is mono regardless of source (stereo is downmixed pre-stretch)
+        int minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT);
+        AudioTrack t = new AudioTrack(AudioManager.STREAM_MUSIC, sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                Math.max(minBuf * 2, 16384), AudioTrack.MODE_STREAM);
         t.play();
         track = t;
     }
