@@ -257,7 +257,21 @@ public class Messages extends AppCompatActivity {
         }
         repo.addListener(repoListener);
         rebuildListFromDb();   // returning from a chat: unread/snippets changed
+
+        // a dark-mode toggle inside Settings recreates this activity (that's how
+        // AppCompat applies the theme) and tears down the dialog — reopen it in
+        // the new theme so the switch feels live. Time-bounded so a stale flag
+        // can't pop Settings open on an unrelated later resume.
+        if (reopenSettingsAt != 0 && System.currentTimeMillis() - reopenSettingsAt < 3000) {
+            reopenSettingsAt = 0;
+            handler.post(this::showSettings);
+        } else {
+            reopenSettingsAt = 0;
+        }
     }
+
+    /** Set just before a dark-mode-driven recreate; consumed in the next onResume. */
+    private static long reopenSettingsAt = 0;
 
     @Override protected void onPause() {
         super.onPause();
@@ -403,6 +417,7 @@ public class Messages extends AppCompatActivity {
 
         addToggle(row1, "🌙", "Dark mode", "dark_mode", radius, primaryText, false, () -> {
             boolean d = prefs.getBoolean("dark_mode", false);
+            reopenSettingsAt = System.currentTimeMillis();  // reopen after recreate
             AppCompatDelegate.setDefaultNightMode(d ? AppCompatDelegate.MODE_NIGHT_YES
                     : AppCompatDelegate.MODE_NIGHT_NO);
         });
