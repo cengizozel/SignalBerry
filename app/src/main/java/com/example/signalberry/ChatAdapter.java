@@ -25,6 +25,8 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private static final int VIEW_PEER_IMAGE  = 3;
     private static final int VIEW_ME_IMAGE    = 4;
     private static final int VIEW_DATE_HEADER = 5;
+    private static final int VIEW_ME_AUDIO    = 6;
+    private static final int VIEW_PEER_AUDIO  = 7;
 
     interface OnImageClickListener  { void onImageClick(int position); }
     interface OnLongPressListener   { void onLongPress(int position); }
@@ -56,6 +58,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         MessageItem m = data.get(position);
         if (m.type == MessageItem.TYPE_DATE_HEADER) return VIEW_DATE_HEADER;
         boolean me = "me".equals(m.from);
+        if ("audio".equals(m.msgType)) return me ? VIEW_ME_AUDIO : VIEW_PEER_AUDIO;
         if (m.type == MessageItem.TYPE_IMAGE) return me ? VIEW_ME_IMAGE : VIEW_PEER_IMAGE;
         return me ? VIEW_ME_TEXT : VIEW_PEER_TEXT;
     }
@@ -70,6 +73,10 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                 return new PeerTextVH(inf.inflate(R.layout.item_chat_peer, parent, false));
             case VIEW_ME_IMAGE:
                 return new MeImageVH(inf.inflate(R.layout.item_chat_me_image, parent, false));
+            case VIEW_ME_AUDIO:
+                return new MeAudioVH(inf.inflate(R.layout.item_chat_me, parent, false));
+            case VIEW_PEER_AUDIO:
+                return new PeerAudioVH(inf.inflate(R.layout.item_chat_peer, parent, false));
             case VIEW_DATE_HEADER:
                 return new DateHeaderVH(inf.inflate(R.layout.item_date_header, parent, false));
             default:
@@ -91,7 +98,9 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         boolean highlighted = highlightTs != 0 && m.serverTs == highlightTs;
         h.itemView.setBackgroundColor(selected ? 0x331976D2
                 : highlighted ? 0x33FFC107 : android.graphics.Color.TRANSPARENT);
-        if (h instanceof MeTextVH)         ((MeTextVH) h).bind(m);
+        if (h instanceof MeAudioVH)        ((MeAudioVH) h).bind(m);
+        else if (h instanceof PeerAudioVH) ((PeerAudioVH) h).bind(m);
+        else if (h instanceof MeTextVH)    ((MeTextVH) h).bind(m);
         else if (h instanceof PeerTextVH)  ((PeerTextVH) h).bind(m);
         else if (h instanceof MeImageVH)   ((MeImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
         else if (h instanceof PeerImageVH) ((PeerImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
@@ -154,6 +163,30 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             bindStatus(m, tvStatus);
             bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
+        }
+    }
+
+    // ---- audio VHs: compact voice-note bubble on the text layouts ----
+    private static CharSequence voiceLabel() {
+        android.text.SpannableString s = new android.text.SpannableString("\u25B6  Voice message");
+        s.setSpan(new android.text.style.ForegroundColorSpan(0xFF2196F3), 0, 1, 0);
+        s.setSpan(new android.text.style.RelativeSizeSpan(1.15f), 0, 1, 0);
+        return s;
+    }
+
+    static class MeAudioVH extends MeTextVH {
+        MeAudioVH(@NonNull View v) { super(v); }
+        @Override void bind(MessageItem m) {
+            super.bind(m);
+            if (m.status != Chat.ST_REMOTE_DELETED) tvMessage.setText(voiceLabel());
+        }
+    }
+
+    static class PeerAudioVH extends PeerTextVH {
+        PeerAudioVH(@NonNull View v) { super(v); }
+        @Override void bind(MessageItem m) {
+            super.bind(m);
+            if (m.status != Chat.ST_REMOTE_DELETED) tvMessage.setText(voiceLabel());
         }
     }
 

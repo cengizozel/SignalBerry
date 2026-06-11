@@ -322,7 +322,8 @@ public class Chat extends AppCompatActivity {
                 chatAdapter.notifyDataSetChanged();
                 return;
             }
-            if (m.status == ST_FAILED && "me".equals(m.from)) retryFailedSend(m);
+            if (m.status == ST_FAILED && "me".equals(m.from)) { retryFailedSend(m); return; }
+            if ("audio".equals(m.msgType)) playAudioFor(m);
         });
 
         // Selection bar
@@ -855,6 +856,20 @@ public class Chat extends AppCompatActivity {
                 }
             });
         }).start();
+    }
+
+    /** Play a voice note: local copy first (covers our own sends, which may
+     *  have no attachment id), then the store cache, then a network fetch. */
+    private void playAudioFor(MessageItem m) {
+        if (m.localUri != null && m.localUri.startsWith("/")) {
+            java.io.File f = new java.io.File(m.localUri);
+            if (f.exists()) { playAudioInline(f); return; }
+        }
+        if (!isEmpty(m.attachmentId)) {
+            AttachmentStore store = AttachmentStore.get(this);
+            if (store.has(m.attachmentId)) { playAudioInline(store.fileFor(m.attachmentId)); return; }
+        }
+        openExternally(m); // fetches by attachment id, then plays inline
     }
 
     private android.media.MediaPlayer audioPlayer;
