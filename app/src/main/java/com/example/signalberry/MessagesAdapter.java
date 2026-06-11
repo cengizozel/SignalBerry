@@ -146,7 +146,7 @@ class MessagesAdapter extends BaseAdapter {
             java.util.concurrent.Executors.newSingleThreadExecutor();
 
     /** Note-to-Self avatar: a notepad drawn in code — no glyph/font dependence. */
-    private static Bitmap noteToSelfCircle(int size) {
+    static Bitmap noteToSelfCircle(int size) {
         Bitmap bm = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bm);
         Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -173,7 +173,7 @@ class MessagesAdapter extends BaseAdapter {
         return (int) (dp * ctx.getResources().getDisplayMetrics().density + 0.5f);
     }
 
-    private Bitmap initialsCircle(String name, int size) {
+    static Bitmap initialsCircle(String name, int size) {
         int color = PALETTE[Math.abs((name == null ? 0 : name.hashCode()) % PALETTE.length)];
         String letter = (name != null && !name.isEmpty()) ? name.substring(0, 1).toUpperCase() : "?";
 
@@ -195,7 +195,7 @@ class MessagesAdapter extends BaseAdapter {
         return bm;
     }
 
-    private static Bitmap circleCrop(Bitmap src, int size) {
+    static Bitmap circleCrop(Bitmap src, int size) {
         Bitmap scaled = Bitmap.createScaledBitmap(src, size, size, true);
         Bitmap out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(out);

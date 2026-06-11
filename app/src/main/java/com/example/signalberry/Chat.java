@@ -208,8 +208,9 @@ public class Chat extends AppCompatActivity {
         ImageButton back = findViewById(R.id.btn_back);
         back.setOnClickListener(v -> finish());
         android.widget.TextView titleView = findViewById(R.id.title_name);
+        loadChatAvatar();
         titleView.setText(peerName);
-        titleView.setOnClickListener(v -> {
+        findViewById(R.id.title_container).setOnClickListener(v -> {
             if (demoMode) return;
             Intent g = new Intent(Chat.this, MediaGalleryActivity.class);
             g.putExtra(MediaGalleryActivity.EXTRA_PEER_KEY, chatDbKey);
@@ -860,6 +861,29 @@ public class Chat extends AppCompatActivity {
                     else Toast.makeText(this, "No app can open this file", Toast.LENGTH_SHORT).show();
                 }
             });
+        }).start();
+    }
+
+    /** Peer avatar in the title bar: photo if the contact has one, initials
+     *  otherwise, notepad for Note to Self. Same cache as the chat list. */
+    private void loadChatAvatar() {
+        final android.widget.ImageView iv = findViewById(R.id.iv_chat_avatar);
+        if (iv == null) return;
+        final int size = (int) (30 * getResources().getDisplayMetrics().density + 0.5f);
+        if (notEmpty(myNumber) && chatDbKey.equals(digits(myNumber))) {
+            iv.setImageBitmap(MessagesAdapter.noteToSelfCircle(size));
+            return;
+        }
+        iv.setImageBitmap(MessagesAdapter.initialsCircle(peerName, size));
+        if (demoMode) return;
+        final String avatarUuid = prefs.getString("contact_avatar_" + chatDbKey, "");
+        if (isEmpty(avatarUuid)) return;
+        new Thread(() -> {
+            android.graphics.Bitmap raw = new AvatarCache(getCacheDir(), baseSignal, myNumber)
+                    .fetch(peerNumber, avatarUuid);
+            if (raw == null) return;
+            final android.graphics.Bitmap circle = MessagesAdapter.circleCrop(raw, size);
+            runOnUiThread(() -> iv.setImageBitmap(circle));
         }).start();
     }
 
