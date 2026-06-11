@@ -148,6 +148,7 @@ final class Utils {
         c.setConnectTimeout(8000);
         c.setReadTimeout(8000);
         c.setRequestMethod("GET");
+        Auth.apply(c);
         int code = c.getResponseCode();
         c.disconnect();
         return code;
@@ -158,6 +159,7 @@ final class Utils {
         c.setConnectTimeout(8000);
         c.setReadTimeout(8000);
         c.setRequestMethod("GET");
+        Auth.apply(c);
         int code = c.getResponseCode();
         try (BufferedReader br = new BufferedReader(new InputStreamReader(
                 code >= 400 ? c.getErrorStream() : c.getInputStream()))) {
@@ -176,6 +178,7 @@ final class Utils {
         c.setConnectTimeout(8000);
         c.setReadTimeout(8000);
         c.setRequestMethod("POST");
+        Auth.apply(c);
         c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         c.setDoOutput(true);
         try (OutputStream os = new BufferedOutputStream(c.getOutputStream())) {
@@ -191,6 +194,7 @@ final class Utils {
         c.setConnectTimeout(8000);
         c.setReadTimeout(8000);
         c.setRequestMethod("PUT");
+        Auth.apply(c);
         c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         c.setDoOutput(true);
         try (OutputStream os = new BufferedOutputStream(c.getOutputStream())) {
@@ -206,6 +210,7 @@ final class Utils {
         c.setConnectTimeout(8000);
         c.setReadTimeout(8000);
         c.setRequestMethod("DELETE");
+        Auth.apply(c);
         c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         c.setDoOutput(true);
         try (OutputStream os = new BufferedOutputStream(c.getOutputStream())) {

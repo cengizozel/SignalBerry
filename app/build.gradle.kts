@@ -41,4 +41,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:3.12.13")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
+    // modern TLS engine bundled in the APK — gives Android 4.3 / BB10 TLS 1.3
+    // (2.5.2 declares minSdk 9, so no override needed; verified loading on a Q10)
+    implementation("org.conscrypt:conscrypt-android:2.5.2")
 }

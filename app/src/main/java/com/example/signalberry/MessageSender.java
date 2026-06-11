@@ -81,6 +81,7 @@ final class MessageSender {
             c.setConnectTimeout(8000);
             c.setReadTimeout(timeoutMs);
             c.setRequestMethod("POST");
+            Auth.apply(c);
             c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             c.setDoOutput(true);
             try (OutputStream os = new java.io.BufferedOutputStream(c.getOutputStream())) {

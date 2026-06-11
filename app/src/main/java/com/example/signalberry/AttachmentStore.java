@@ -76,6 +76,7 @@ final class AttachmentStore {
                     new URL(baseSignal + "/v1/attachments/" + Uri.encode(attId)).openConnection();
             c.setConnectTimeout(8000);
             c.setReadTimeout(60000);
+            Auth.apply(c);
             if (c.getResponseCode() != 200) { c.disconnect(); return null; }
             try (InputStream is = c.getInputStream();
                  OutputStream os = new FileOutputStream(tmp)) {
@@ -103,6 +104,7 @@ final class AttachmentStore {
             c.setConnectTimeout(8000);
             c.setReadTimeout(8000);
             c.setRequestMethod("GET");
+            Auth.apply(c);
             c.connect();
             long len = -1;
             if (c.getResponseCode() == 200) {
@@ -201,6 +203,7 @@ final class AttachmentStore {
         c.setConnectTimeout(8000);
         c.setReadTimeout(120_000); // signal-cli decodes + dispatches before replying
         c.setRequestMethod("POST");
+        Auth.apply(c);
         c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
         c.setDoOutput(true);
         c.setChunkedStreamingMode(0);

@@ -105,7 +105,7 @@ public class MessageService extends Service {
         try {
             String base  = normalizeBase(ip);
             String wsUrl = toWs(base) + "/v1/receive/" + URLEncoder.encode(number, "UTF-8");
-            Request req  = new Request.Builder().url(wsUrl).build();
+            Request req  = Auth.apply(new Request.Builder().url(wsUrl)).build();
             ws = client.newWebSocket(req, new WebSocketListener() {
                 @Override public void onOpen(WebSocket s, Response r) {
                     if (gen != wsGeneration) { s.cancel(); return; }

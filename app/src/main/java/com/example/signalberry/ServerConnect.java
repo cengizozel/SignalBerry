@@ -36,10 +36,30 @@ public class ServerConnect extends AppCompatActivity {
         EditText ipField = findViewById(R.id.input_ip);
         EditText numberField = findViewById(R.id.input_number);
         Button connectBtn = findViewById(R.id.btn_connect);
+        EditText bridgeUrlField = findViewById(R.id.input_bridge_url);
+        EditText tokenField     = findViewById(R.id.input_bridge_token);
+        EditText cfIdField      = findViewById(R.id.input_cf_id);
+        EditText cfSecretField  = findViewById(R.id.input_cf_secret);
+        final android.view.View remoteSection = findViewById(R.id.remote_section);
+        final android.widget.TextView remoteToggle = findViewById(R.id.remote_toggle);
 
         // Prefill from last run
         ipField.setText(savedIp);
         numberField.setText(savedNumber);
+        bridgeUrlField.setText(prefs.getString("bridge_url_pref", ""));
+        tokenField.setText(prefs.getString("bridge_token", ""));
+        cfIdField.setText(prefs.getString("cf_access_id", ""));
+        cfSecretField.setText(prefs.getString("cf_access_secret", ""));
+        boolean hasRemote = notEmpty(prefs.getString("bridge_token", ""))
+                || notEmpty(prefs.getString("cf_access_id", ""))
+                || notEmpty(prefs.getString("bridge_url_pref", ""));
+        remoteSection.setVisibility(hasRemote ? android.view.View.VISIBLE : android.view.View.GONE);
+        remoteToggle.setText((hasRemote ? "▼" : "▶") + "  Remote access (Cloudflare)");
+        remoteToggle.setOnClickListener(t -> {
+            boolean show = remoteSection.getVisibility() != android.view.View.VISIBLE;
+            remoteSection.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
+            remoteToggle.setText((show ? "▼" : "▶") + "  Remote access (Cloudflare)");
+        });
 
         connectBtn.setOnClickListener(v -> {
             String ip = ipField.getText().toString().trim();
@@ -48,6 +68,17 @@ public class ServerConnect extends AppCompatActivity {
                 Toast.makeText(this, "Enter server IP and your Signal number", Toast.LENGTH_SHORT).show();
                 return;
             }
+
+            // persist + activate creds first — the verify calls below go through
+            // Cloudflare for remote and need the headers
+            String bridgeUrl = bridgeUrlField.getText().toString().trim();
+            prefs.edit()
+                    .putString("bridge_url_pref", bridgeUrl)
+                    .putString("bridge_token", tokenField.getText().toString().trim())
+                    .putString("cf_access_id", cfIdField.getText().toString().trim())
+                    .putString("cf_access_secret", cfSecretField.getText().toString().trim())
+                    .apply();
+            Auth.load(prefs);
 
             connectBtn.setEnabled(false);
             new Thread(() -> {
@@ -77,10 +108,12 @@ public class ServerConnect extends AppCompatActivity {
                 runOnUiThread(() -> {
                     connectBtn.setEnabled(true);
                     if (finalOk) {
+                        String bridgeBase = notEmpty(bridgeUrl)
+                                ? normalizeBase(bridgeUrl) : deriveBridgeBase(ip);
                         prefs.edit()
                                 .putString("ip", ip)
                                 .putString("number", finalCanonical != null ? finalCanonical : numberInput)
-                                .putString("bridge", deriveBridgeBase(ip))
+                                .putString("bridge", bridgeBase)
                                 .apply();
                         startActivity(new Intent(ServerConnect.this, Messages.class));
                     } else {

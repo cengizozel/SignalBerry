@@ -135,6 +135,7 @@ class AvatarCache {
         c.setConnectTimeout(8000);
         c.setReadTimeout(8000);
         c.setRequestMethod("GET");
+        Auth.apply(c);
         int code = c.getResponseCode();
         if (code >= 400) { c.disconnect(); return null; }
         try (InputStream is = c.getInputStream();
