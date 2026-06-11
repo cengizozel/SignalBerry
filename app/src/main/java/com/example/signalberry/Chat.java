@@ -178,7 +178,8 @@ public class Chat extends AppCompatActivity {
         baseSignal = normalizeBase(ipPref);
         chatDbKey = PeerKeys.get(this).resolve(peerNumber, peerUuid);
         openReadTs = prefs.getLong("read_ts_" + chatDbKey, 0);
-        // local alias (set from the conversation list) overrides the passed name
+        // self thread is "Note to Self"; a local alias overrides everything
+        if (notEmpty(myNumber) && chatDbKey.equals(digits(myNumber))) peerName = "Note to Self";
         String alias = prefs.getString("alias_" + chatDbKey, "");
         if (notEmpty(alias)) peerName = alias;
 

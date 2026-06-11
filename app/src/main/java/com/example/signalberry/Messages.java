@@ -351,10 +351,11 @@ public class Messages extends AppCompatActivity {
                 String snippet = s.second[0];
                 String time    = s.second[1];
                 String ts      = s.second[2];
-                // a user-set local alias wins over anything signal-cli knows —
-                // some contacts have no name in signal-cli at all (no synced
-                // contact name, no profile name) and fall back to their number
+                boolean isSelf = notEmpty(myNumber) && key.equals(digits(myNumber));
+                // alias wins; the self thread gets "Note to Self" like official
+                // Signal; others fall back contact name → key
                 String name = prefs.getString("alias_" + key, "");
+                if (isEmpty(name) && isSelf) name = "Note to Self";
                 if (isEmpty(name)) synchronized (nameByPeerKey) { name = nameByPeerKey.get(key); }
                 if (isEmpty(name)) name = prefs.getString("contact_name_" + key, key);
                 String num    = prefs.getString("contact_num_" + key, "");
@@ -369,7 +370,8 @@ public class Messages extends AppCompatActivity {
                 row.put("ts",          ts);
                 row.put("number",      num);
                 row.put("uuid",        uuid);
-                row.put("avatar_path", avatar);
+                row.put("avatar_path", isSelf ? "" : avatar);
+                if (isSelf) row.put("is_self", "1");
                 row.put("unread",      String.valueOf(unread));
                 rows.add(row);
             }

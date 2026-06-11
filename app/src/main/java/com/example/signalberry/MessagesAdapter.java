@@ -89,6 +89,16 @@ class MessagesAdapter extends BaseAdapter {
         }
 
         int sizePx = dpToPx(44);
+        if ("1".equals(item.get("is_self"))) {
+            Bitmap note = BIND_CACHE.get("noteself|" + sizePx);
+            if (note == null) {
+                note = noteToSelfCircle(sizePx);
+                BIND_CACHE.put("noteself|" + sizePx, note);
+            }
+            ivAvatar.setImageBitmap(note);
+            ivAvatar.setTag("noteself");
+            return convertView;
+        }
         String initialsKey = (name == null || name.isEmpty() ? "?" : name.substring(0, 1)) + "|"
                 + Math.abs((name == null ? 0 : name.hashCode()) % PALETTE.length);
         Bitmap initials = BIND_CACHE.get("init|" + initialsKey);
@@ -134,6 +144,30 @@ class MessagesAdapter extends BaseAdapter {
             };
     private static final java.util.concurrent.ExecutorService BIND_EXEC =
             java.util.concurrent.Executors.newSingleThreadExecutor();
+
+    /** Note-to-Self avatar: a notepad drawn in code — no glyph/font dependence. */
+    private static Bitmap noteToSelfCircle(int size) {
+        Bitmap bm = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bm);
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fill.setColor(0xFF607D8B); // blue-gray: distinct from the contact palette
+        c.drawCircle(size / 2f, size / 2f, size / 2f, fill);
+
+        Paint page = new Paint(Paint.ANTI_ALIAS_FLAG);
+        page.setColor(Color.WHITE);
+        float l = size * 0.32f, t = size * 0.26f, r = size * 0.68f, b = size * 0.74f;
+        c.drawRoundRect(new android.graphics.RectF(l, t, r, b), size * 0.04f, size * 0.04f, page);
+
+        Paint line = new Paint(Paint.ANTI_ALIAS_FLAG);
+        line.setColor(0xFF607D8B);
+        line.setStrokeWidth(Math.max(1f, size * 0.035f));
+        float inset = size * 0.06f;
+        for (int i = 1; i <= 3; i++) {
+            float y = t + (b - t) * i / 4f;
+            c.drawLine(l + inset, y, r - inset, y, line);
+        }
+        return bm;
+    }
 
     private int dpToPx(int dp) {
         return (int) (dp * ctx.getResources().getDisplayMetrics().density + 0.5f);
