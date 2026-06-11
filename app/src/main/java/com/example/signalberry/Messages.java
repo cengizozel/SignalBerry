@@ -213,6 +213,10 @@ public class Messages extends AppCompatActivity {
         ImageView toolbarAvatar = findViewById(R.id.toolbar_avatar);
         toolbarAvatar.setOnClickListener(v -> showSettings());
 
+        if (!prefs.contains("show_search_bar"))
+            prefs.edit().putBoolean("show_search_bar", true).apply();
+        applySearchBarVisibility();
+
         // Pull-to-refresh
         androidx.swiperefreshlayout.widget.SwipeRefreshLayout swipe = findViewById(R.id.swipe_refresh);
         swipe.setOnRefreshListener(() -> {
@@ -428,11 +432,32 @@ public class Messages extends AppCompatActivity {
                     : AppCompatDelegate.MODE_NIGHT_NO);
         });
         addToggle(row1, "✓✓", "Read receipts", "send_read_receipts", radius, primaryText, true, null);
-        addToggle(row2, "▶", "Demo mode", "demo_mode", radius, primaryText, false, () -> {
+        addToggle(row2, "🐞", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
+        addToggle(row2, "🔍", "Search bar", "show_search_bar", radius, primaryText, false,
+                this::applySearchBarVisibility);
+
+        // collapsible extras — rarely-used toggles live here
+        final android.widget.LinearLayout extra = new android.widget.LinearLayout(this);
+        extra.setOrientation(android.widget.LinearLayout.VERTICAL);
+        extra.setVisibility(android.view.View.GONE);
+        final android.widget.TextView more = new android.widget.TextView(this);
+        more.setText("▸  Additional settings");
+        more.setTextSize(14);
+        more.setTextColor(0xFF888888);
+        more.setPadding(dpI(8), dpI(12), dpI(8), dpI(8));
+        more.setOnClickListener(v -> {
+            boolean show = extra.getVisibility() != android.view.View.VISIBLE;
+            extra.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
+            more.setText((show ? "▾" : "▸") + "  Additional settings");
+        });
+        root.addView(more);
+        android.widget.LinearLayout extraRow = gridRow();
+        extra.addView(extraRow);
+        addToggle(extraRow, "▶", "Demo mode", "demo_mode", radius, primaryText, false, () -> {
             adapter.setDemoMode(prefs.getBoolean("demo_mode", false));
             filter(search.getText().toString());
         });
-        addToggle(row2, "🐞", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
+        root.addView(extra);
 
         root.addView(settingsDivider());
         root.addView(actionRow("🔥   Purge message history", 0xFFFF9800, radius,
@@ -545,6 +570,14 @@ public class Messages extends AppCompatActivity {
 
     private int dpI(int dp) {
         return (int) (dp * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void applySearchBarVisibility() {
+        boolean show = prefs.getBoolean("show_search_bar", true);
+        if (search != null) {
+            if (!show && search.getText().length() > 0) search.setText(""); // unfilter
+            search.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
+        }
     }
 
     private void confirmReadReceipts(Runnable refresh) {

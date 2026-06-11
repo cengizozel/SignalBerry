@@ -22,7 +22,8 @@ public class NewChat extends AppCompatActivity {
     private final List<Map<String, String>> rows = new ArrayList<>();
     /** What's currently displayed (filtered, possibly + the number row). */
     private final List<Map<String, String>> visible = new ArrayList<>();
-    private android.widget.SimpleAdapter adapter;
+    private MessagesAdapter adapter;
+    private AvatarCache avatarCache;
     private String restBase;
     private String myNumber;
 
@@ -34,10 +35,10 @@ public class NewChat extends AppCompatActivity {
         ListView list = findViewById(R.id.list_people);
         EditText search = findViewById(R.id.search);
 
-        adapter = new android.widget.SimpleAdapter(
-                this, visible, R.layout.row_chat,
-                new String[]{"name", "snippet", "time"},
-                new int[]{R.id.name, R.id.snippet, R.id.time});
+        String host0 = getSharedPreferences("signalberry", MODE_PRIVATE).getString("ip", "");
+        String num0  = getSharedPreferences("signalberry", MODE_PRIVATE).getString("number", "");
+        avatarCache = new AvatarCache(getCacheDir(), normalizeBase(host0), num0);
+        adapter = new MessagesAdapter(this, visible, avatarCache, false);
         list.setAdapter(adapter);
 
         list.setOnItemClickListener((parent, view, position, id) -> {
@@ -89,12 +90,15 @@ public class NewChat extends AppCompatActivity {
                     if (isEmpty(num) && isEmpty(uuid)) continue;
                     if (withThread.contains(peerKeys.resolve(num, uuid))) continue;
 
+                    JSONObject prof = c.optJSONObject("profile");
+                    boolean hasAvatar = prof != null && prof.optBoolean("has_avatar", false);
                     Map<String, String> row = new HashMap<>();
                     row.put("name", display);
                     row.put("snippet", "");
                     row.put("time", "");
                     row.put("number", num);
                     row.put("uuid",   uuid);
+                    row.put("avatar_path", hasAvatar ? uuid : "");
                     out.add(row);
                 }
 
