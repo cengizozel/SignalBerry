@@ -211,93 +211,7 @@ public class Messages extends AppCompatActivity {
         });
 
         ImageView toolbarAvatar = findViewById(R.id.toolbar_avatar);
-        toolbarAvatar.setOnClickListener(v -> {
-            boolean dbgOn  = prefs.getBoolean("debug_log", false);
-            boolean darkOn = prefs.getBoolean("dark_mode", false);
-            boolean demoOn = prefs.getBoolean("demo_mode", false);
-            boolean rrOn   = prefs.getBoolean("send_read_receipts", false);
-            new AlertDialog.Builder(this)
-                    .setTitle("Settings")
-                    .setItems(new String[]{
-                            "Log out",
-                            "Debug log: " + (dbgOn ? "ON ✓" : "OFF"),
-                            "Dark mode: " + (darkOn ? "ON ✓" : "OFF"),
-                            "Demo mode: " + (demoOn ? "ON ✓" : "OFF"),
-                            "Send read receipts: " + (rrOn ? "ON ✓" : "OFF"),
-                            "Purge message history…"
-                    }, (dialog, which) -> {
-                        if (which == 0) {
-                            new AlertDialog.Builder(Messages.this)
-                                    .setMessage("Log out and wipe all local messages, media and caches from this device?")
-                                    .setPositiveButton("Log out", (dd, ww) -> {
-                                        stopService(new Intent(Messages.this, MessageService.class));
-                                        Repo.reset();
-                                        android.app.NotificationManager nm = (android.app.NotificationManager)
-                                                getSystemService(NOTIFICATION_SERVICE);
-                                        if (nm != null) nm.cancelAll();
-                                        deleteDatabase("signalberry.db");
-                                        deleteRecursive(new java.io.File(getFilesDir(), "att"));
-                                        deleteRecursive(getCacheDir());
-                                        getSharedPreferences("peer_map", MODE_PRIVATE).edit().clear().apply();
-                                        prefs.edit().clear().apply();
-                                        startActivity(new Intent(Messages.this, ServerConnect.class));
-                                        finish();
-                                    })
-                                    .setNegativeButton("Cancel", null)
-                                    .show();
-                        } else if (which == 1) {
-                            boolean newVal = !prefs.getBoolean("debug_log", false);
-                            prefs.edit().putBoolean("debug_log", newVal).apply();
-                            updateDebugPanel();
-                        } else if (which == 2) {
-                            boolean newDark = !prefs.getBoolean("dark_mode", false);
-                            prefs.edit().putBoolean("dark_mode", newDark).apply();
-                            AppCompatDelegate.setDefaultNightMode(
-                                    newDark ? AppCompatDelegate.MODE_NIGHT_YES
-                                            : AppCompatDelegate.MODE_NIGHT_NO);
-                        } else if (which == 3) {
-                            boolean newDemo = !prefs.getBoolean("demo_mode", false);
-                            prefs.edit().putBoolean("demo_mode", newDemo).apply();
-                            adapter.setDemoMode(newDemo);
-                            filter(search.getText().toString());
-                        } else if (which == 5) {
-                            new AlertDialog.Builder(Messages.this)
-                                    .setTitle("Purge message history?")
-                                    .setMessage("Deletes ALL messages and media from this device "
-                                            + "and from the bridge server. You stay logged in. "
-                                            + "Your phone's Signal history is not affected.\n\n"
-                                            + "This cannot be undone.")
-                                    .setPositiveButton("Purge everything", (dd, ww) -> new Thread(() -> {
-                                        String err = repo.purgeAllData(Messages.this);
-                                        runOnUiThread(() -> {
-                                            Toast.makeText(Messages.this,
-                                                    err == null ? "All message data purged" : err,
-                                                    Toast.LENGTH_LONG).show();
-                                            rebuildListFromDb();
-                                        });
-                                    }).start())
-                                    .setNegativeButton("Cancel", null)
-                                    .show();
-                        } else {
-                            boolean newRr = !prefs.getBoolean("send_read_receipts", false);
-                            if (newRr) {
-                                new AlertDialog.Builder(Messages.this)
-                                        .setTitle("Send read receipts?")
-                                        .setMessage("Only enable this if read receipts are also "
-                                                + "enabled in Signal on your phone — otherwise "
-                                                + "contacts would see read status your account "
-                                                + "setting is meant to hide.")
-                                        .setPositiveButton("Enable", (dd, ww) ->
-                                                prefs.edit().putBoolean("send_read_receipts", true).apply())
-                                        .setNegativeButton("Cancel", null)
-                                        .show();
-                            } else {
-                                prefs.edit().putBoolean("send_read_receipts", false).apply();
-                            }
-                        }
-                    })
-                    .show();
-        });
+        toolbarAvatar.setOnClickListener(v -> showSettings());
 
         // Pull-to-refresh
         androidx.swiperefreshlayout.widget.SwipeRefreshLayout swipe = findViewById(R.id.swipe_refresh);
@@ -466,6 +380,206 @@ public class Messages extends AppCompatActivity {
     }
 
     // ---------------- Self avatar ----------------
+    // ── Settings: toggle grid + bottom actions (built in code, no Material) ──
+
+    private void showSettings() {
+        final int radius = dpI(10);
+        final int primaryText = themeColor(android.R.attr.textColorPrimary);
+
+        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
+        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+        root.setPadding(dpI(12), dpI(8), dpI(12), dpI(12));
+
+        android.widget.LinearLayout row1 = gridRow();
+        android.widget.LinearLayout row2 = gridRow();
+        root.addView(row1);
+        root.addView(row2);
+
+        final android.app.AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("Settings")
+                .setView(wrapScroll(root))
+                .setNegativeButton("Close", null)
+                .create();
+
+        addToggle(row1, "🌙", "Dark mode", "dark_mode", radius, primaryText, false, () -> {
+            boolean d = prefs.getBoolean("dark_mode", false);
+            AppCompatDelegate.setDefaultNightMode(d ? AppCompatDelegate.MODE_NIGHT_YES
+                    : AppCompatDelegate.MODE_NIGHT_NO);
+        });
+        addToggle(row1, "✓✓", "Read receipts", "send_read_receipts", radius, primaryText, true, null);
+        addToggle(row2, "🧪", "Demo mode", "demo_mode", radius, primaryText, false, () -> {
+            adapter.setDemoMode(prefs.getBoolean("demo_mode", false));
+            filter(search.getText().toString());
+        });
+        addToggle(row2, "🐞", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
+
+        root.addView(settingsDivider());
+        root.addView(actionRow("🧹  Purge message history", 0xFFFF9800, radius,
+                () -> { dlg.dismiss(); doPurgeAll(); }));
+        root.addView(actionRow("⎋  Log out", 0xFFD32F2F, radius,
+                () -> { dlg.dismiss(); doLogout(); }));
+
+        dlg.show();
+    }
+
+    /** A square-ish toggle card with ON=accent / OFF=muted visual states. */
+    private void addToggle(android.widget.LinearLayout row, String icon, String title,
+                           String prefKey, int radius, int primaryText,
+                           boolean confirmOnEnable, Runnable onChanged) {
+        android.widget.LinearLayout cell = new android.widget.LinearLayout(this);
+        cell.setOrientation(android.widget.LinearLayout.VERTICAL);
+        cell.setGravity(android.view.Gravity.CENTER);
+        android.widget.LinearLayout.LayoutParams lp =
+                new android.widget.LinearLayout.LayoutParams(0, dpI(86), 1f);
+        lp.setMargins(dpI(4), dpI(4), dpI(4), dpI(4));
+        cell.setLayoutParams(lp);
+        cell.setPadding(dpI(6), dpI(6), dpI(6), dpI(6));
+
+        final android.widget.TextView ic = new android.widget.TextView(this);
+        ic.setText(icon); ic.setTextSize(22); ic.setGravity(android.view.Gravity.CENTER);
+        final android.widget.TextView tt = new android.widget.TextView(this);
+        tt.setText(title); tt.setTextSize(13); tt.setGravity(android.view.Gravity.CENTER);
+        final android.widget.TextView st = new android.widget.TextView(this);
+        st.setTextSize(11); st.setGravity(android.view.Gravity.CENTER);
+        cell.addView(ic); cell.addView(tt); cell.addView(st);
+
+        final Runnable refresh = () -> {
+            boolean on = prefs.getBoolean(prefKey, false);
+            android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+            g.setCornerRadius(radius);
+            g.setColor(on ? 0xFF2196F3 : 0x22808080);
+            cell.setBackground(g);
+            int tc = on ? 0xFFFFFFFF : primaryText;
+            ic.setTextColor(tc); tt.setTextColor(tc);
+            st.setTextColor(on ? 0xCCFFFFFF : 0xFF888888);
+            st.setText(on ? "ON" : "OFF");
+        };
+        refresh.run();
+
+        cell.setOnClickListener(v -> {
+            pulse(v);
+            boolean cur = prefs.getBoolean(prefKey, false);
+            if (!cur && confirmOnEnable) {
+                confirmReadReceipts(refresh);
+                return;
+            }
+            prefs.edit().putBoolean(prefKey, !cur).apply();
+            refresh.run();
+            if (onChanged != null) onChanged.run();
+        });
+        row.addView(cell);
+    }
+
+    private android.widget.LinearLayout gridRow() {
+        android.widget.LinearLayout r = new android.widget.LinearLayout(this);
+        r.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        r.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+        return r;
+    }
+
+    private android.view.View settingsDivider() {
+        android.view.View v = new android.view.View(this);
+        android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, dpI(1));
+        lp.setMargins(dpI(4), dpI(14), dpI(4), dpI(8));
+        v.setLayoutParams(lp);
+        v.setBackgroundColor(0x33808080);
+        return v;
+    }
+
+    private android.view.View actionRow(String text, int color, int radius, Runnable onClick) {
+        android.widget.TextView tv = new android.widget.TextView(this);
+        tv.setText(text); tv.setTextSize(15); tv.setTextColor(color);
+        tv.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        tv.setPadding(dpI(16), dpI(14), dpI(16), dpI(14));
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setCornerRadius(radius); g.setColor(0x18808080);
+        tv.setBackground(g);
+        android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(dpI(4), dpI(4), dpI(4), dpI(4));
+        tv.setLayoutParams(lp);
+        tv.setOnClickListener(v -> { pulse(v); onClick.run(); });
+        return tv;
+    }
+
+    private android.widget.ScrollView wrapScroll(android.view.View child) {
+        android.widget.ScrollView s = new android.widget.ScrollView(this);
+        s.addView(child);
+        return s;
+    }
+
+    private static void pulse(android.view.View v) {
+        v.animate().scaleX(0.93f).scaleY(0.93f).setDuration(70)
+                .withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(70).start())
+                .start();
+    }
+
+    private int themeColor(int attr) {
+        android.util.TypedValue tv = new android.util.TypedValue();
+        getTheme().resolveAttribute(attr, tv, true);
+        return tv.resourceId != 0 ? getResources().getColor(tv.resourceId) : tv.data;
+    }
+
+    private int dpI(int dp) {
+        return (int) (dp * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private void confirmReadReceipts(Runnable refresh) {
+        new AlertDialog.Builder(this)
+                .setTitle("Send read receipts?")
+                .setMessage("Only enable this if read receipts are also enabled in Signal on "
+                        + "your phone — otherwise contacts would see read status your account "
+                        + "setting is meant to hide.")
+                .setPositiveButton("Enable", (d, w) -> {
+                    prefs.edit().putBoolean("send_read_receipts", true).apply();
+                    refresh.run();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void doPurgeAll() {
+        new AlertDialog.Builder(this)
+                .setTitle("Purge message history?")
+                .setMessage("Deletes ALL messages and media from this device and from the bridge "
+                        + "server. You stay logged in. Your phone's Signal history is not affected.\n\n"
+                        + "This cannot be undone.")
+                .setPositiveButton("Purge everything", (d, w) -> new Thread(() -> {
+                    String err = repo.purgeAllData(Messages.this);
+                    runOnUiThread(() -> {
+                        Toast.makeText(Messages.this,
+                                err == null ? "All message data purged" : err,
+                                Toast.LENGTH_LONG).show();
+                        rebuildListFromDb();
+                    });
+                }).start())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void doLogout() {
+        new AlertDialog.Builder(this)
+                .setMessage("Log out and wipe all local messages, media and caches from this device?")
+                .setPositiveButton("Log out", (d, w) -> {
+                    stopService(new Intent(Messages.this, MessageService.class));
+                    Repo.reset();
+                    android.app.NotificationManager nm = (android.app.NotificationManager)
+                            getSystemService(NOTIFICATION_SERVICE);
+                    if (nm != null) nm.cancelAll();
+                    deleteDatabase("signalberry.db");
+                    deleteRecursive(new java.io.File(getFilesDir(), "att"));
+                    deleteRecursive(getCacheDir());
+                    getSharedPreferences("peer_map", MODE_PRIVATE).edit().clear().apply();
+                    prefs.edit().clear().apply();
+                    startActivity(new Intent(Messages.this, ServerConnect.class));
+                    finish();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     /** Local rename: store a per-peer alias used everywhere the name is shown.
      *  Purely local — never sent to Signal or the contact. */
     private void promptSetAlias(String key, String current) {
