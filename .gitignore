@@ -17,3 +17,6 @@
 .cxx
 local.properties
 CLAUDE.md
+artifacts/
+CLAUDE.md
+docs/final-review-findings.json
