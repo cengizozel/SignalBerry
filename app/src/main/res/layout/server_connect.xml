@@ -24,7 +24,7 @@
             android:id="@+id/input_ip"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="IP or host:port"
+            android:hint="IP:port or https URL"
             android:inputType="textNoSuggestions"
             android:singleLine="true"
             android:padding="8dp" />
@@ -60,7 +60,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="For using SignalBerry away from home WiFi. The top field and Bridge URL tell the app where to reach your server. A bridge token is recommended: it is the password that keeps anyone who finds your address from reading or sending your messages."
+                android:text="For use away from home WiFi. A bridge token is recommended: it keeps anyone else who finds your address from using your account."
                 android:textSize="12sp"
                 android:textColor="#999999"
                 android:paddingBottom="8dp" />
