@@ -20,7 +20,7 @@ public class WaveformView extends View {
     private float progress;
     private boolean seekable;
     private OnSeekListener seekListener;
-    private int playedColor = 0xFF2196F3;
+    private int playedColor = Utils.ACCENT;
     private int restColor   = 0x66888888;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 

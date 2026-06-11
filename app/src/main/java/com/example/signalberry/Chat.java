@@ -507,7 +507,7 @@ public class Chat extends AppCompatActivity {
                         replyTs, qt, qa);
             } else {
                 repo.failSend(chatDbKey, nonce);
-                final String err = lastSendError;
+                final String err = MessageSender.lastError();
                 runOnUiThread(() -> {
                     if (err != null && err.toLowerCase(java.util.Locale.US).contains("untrusted")) {
                         promptTrustIdentity();
@@ -596,64 +596,16 @@ public class Chat extends AppCompatActivity {
     /** POST /v2/send; returns the raw timestamp string from the response
      *  (string or number per M1 — never parsed here), or null on failure. */
     private String sendOnce(String text, MessageItem replyTo, long replyTs) {
-        try {
-            String url = baseSignal + "/v2/send";
-            JSONObject body = new JSONObject();
-            body.put("message", text);
-            body.put("number", myNumber);
-            JSONArray rcpts = new JSONArray();
-            rcpts.put(sendRecipient);
-            body.put("recipients", rcpts);
-            if (replyTo != null && replyTs > 0) {
-                body.put("quote_timestamp", replyTs);
-                String qAuthor = "me".equals(replyTo.from) ? myNumber
-                        : (sendRecipient);
-                body.put("quote_author", qAuthor == null ? "" : qAuthor);
-                String qText = replyTo.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
-                        : (replyTo.text != null ? replyTo.text : "");
-                body.put("quote_message", qText);
-            }
-            return postForTimestamp(url, body.toString(), 8000);
-        } catch (Exception e) { return null; }
+        return sendOnce(text, replyTo, replyTs, null);
     }
 
-    /** Last send-failure response body (for untrusted-identity detection). */
-    private static volatile String lastSendError = "";
-
-    /** Shared POST helper: returns raw "timestamp" field as string, or null. */
-    private static String postForTimestamp(String url, String json, int timeoutMs) {
+    private String sendOnce(String text, MessageItem replyTo, long replyTs, JSONArray mentions) {
         try {
-            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-            c.setConnectTimeout(8000); c.setReadTimeout(timeoutMs);
-            c.setRequestMethod("POST");
-            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            c.setDoOutput(true);
-            try (java.io.OutputStream os = new java.io.BufferedOutputStream(c.getOutputStream())) {
-                os.write(json.getBytes("UTF-8"));
-            }
-            int code = c.getResponseCode();
-            if (code < 200 || code >= 300) {
-                try (java.io.InputStream es = c.getErrorStream();
-                     java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
-                    if (es != null) {
-                        byte[] buf = new byte[1024]; int n;
-                        while ((n = es.read(buf)) != -1) bos.write(buf, 0, n);
-                    }
-                    lastSendError = bos.toString("UTF-8");
-                } catch (Exception ignored) { lastSendError = ""; }
-                c.disconnect();
-                return null;
-            }
-            lastSendError = "";
-            String tsRaw;
-            try (java.io.InputStream is = c.getInputStream();
-                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
-                byte[] buf = new byte[1024]; int n;
-                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
-                tsRaw = new JSONObject(bos.toString("UTF-8")).optString("timestamp", "");
-            }
-            c.disconnect();
-            return tsRaw.isEmpty() ? null : tsRaw;
+            MessageSender sender = new MessageSender(baseSignal, myNumber, sendRecipient);
+            JSONObject body = sender.body(text);
+            sender.addQuote(body, replyTo, replyTs, replyTo == null ? null : replyTo.author);
+            MessageSender.addMentions(body, mentions);
+            return sender.send(body, 8000);
         } catch (Exception e) { return null; }
     }
 
@@ -1366,7 +1318,7 @@ public class Chat extends AppCompatActivity {
         android.widget.TextView plus = new android.widget.TextView(this);
         plus.setText("+");
         plus.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 22);
-        plus.setTextColor(0xFF2196F3);
+        plus.setTextColor(Utils.ACCENT);
         plus.setGravity(android.view.Gravity.CENTER);
         plus.setPadding(0, dpC(8), 0, dpC(8));
         plus.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0,
@@ -1387,10 +1339,10 @@ public class Chat extends AppCompatActivity {
         div.setBackgroundColor(0x33808080);
         container.addView(div);
 
-        addMenuRow(container, ref, "↩  Reply", 0xFF2196F3, () -> doReply(displayPos));
+        addMenuRow(container, ref, "↩  Reply", Utils.ACCENT, () -> doReply(displayPos));
         if (notEmpty(copyable)) {
             final String toCopy = copyable;
-            addMenuRow(container, ref, "📋  Copy", 0xFF2196F3, () -> {
+            addMenuRow(container, ref, "📋  Copy", Utils.ACCENT, () -> {
                 android.content.ClipboardManager cm = (android.content.ClipboardManager)
                         getSystemService(CLIPBOARD_SERVICE);
                 if (cm != null) {
@@ -1400,11 +1352,11 @@ public class Chat extends AppCompatActivity {
             });
         }
         if (canEdit) {
-            addMenuRow(container, ref, "✏  Edit", 0xFF2196F3, () -> showEditDialog(m));
+            addMenuRow(container, ref, "✏  Edit", Utils.ACCENT, () -> showEditDialog(m));
             if (m.editHistory != null)
-                addMenuRow(container, ref, "≡  Edit history", 0xFF2196F3, () -> showEditHistory(m));
+                addMenuRow(container, ref, "≡  Edit history", Utils.ACCENT, () -> showEditHistory(m));
         }
-        addMenuRow(container, ref, "✓  Select", 0xFF2196F3, () -> enterSelectionMode(m.serverTs));
+        addMenuRow(container, ref, "✓  Select", Utils.ACCENT, () -> enterSelectionMode(m.serverTs));
         if (canRemoteDelete)
             addMenuRow(container, ref, "×  Delete for everyone", 0xFFFF9800,
                     () -> confirmRemoteDelete(m));
@@ -1565,16 +1517,11 @@ public class Chat extends AppCompatActivity {
     private void sendEdit(MessageItem original, String newText) {
         new Thread(() -> {
             try {
-                String url = baseSignal + "/v2/send";
-                JSONObject body = new JSONObject();
-                body.put("message", newText);
-                body.put("number", myNumber);
-                JSONArray rcpts = new JSONArray();
-                rcpts.put(sendRecipient);
-                body.put("recipients", rcpts);
+                MessageSender sender = new MessageSender(baseSignal, myNumber, sendRecipient);
+                JSONObject body = sender.body(newText);
                 long editTs = original.lastEditTs > 0 ? original.lastEditTs : original.serverTs;
-                body.put("edit_timestamp", editTs);
-                String tsRaw = postForTimestamp(url, body.toString(), 8000);
+                MessageSender.asEdit(body, editTs);
+                String tsRaw = sender.send(body, 8000);
                 final long newEditTs = tsRaw == null ? 0 : parseLongSafe(tsRaw);
                 final long prevTs = editTs;
                 runOnUiThread(() -> {

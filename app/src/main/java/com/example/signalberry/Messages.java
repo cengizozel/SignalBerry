@@ -560,7 +560,7 @@ public class Messages extends AppCompatActivity {
             boolean on = prefs.getBoolean(prefKey, false);
             android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
             g.setCornerRadius(radius);
-            g.setColor(on ? 0xFF2196F3 : 0x22808080);
+            g.setColor(on ? Utils.ACCENT : 0x22808080);
             cell.setBackground(g);
             int tc = on ? 0xFFFFFFFF : primaryText;
             ic.setTextColor(tc); tt.setTextColor(tc);

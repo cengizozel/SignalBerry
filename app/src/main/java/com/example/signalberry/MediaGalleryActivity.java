@@ -127,7 +127,7 @@ public class MediaGalleryActivity extends AppCompatActivity {
         for (int i = 0; i < 4; i++) {
             tabViews[i].setTypeface(null, i == idx
                     ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
-            tabViews[i].setTextColor(i == idx ? 0xFF2196F3 : 0xFF888888);
+            tabViews[i].setTextColor(i == idx ? Utils.ACCENT : 0xFF888888);
         }
         new Thread(() -> {
             final List<Row> fresh = buildRows(idx);

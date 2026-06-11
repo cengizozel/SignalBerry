@@ -34,6 +34,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")
     // implementation(libs.material)
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
     // androidTestImplementation(libs.ext.junit)
     // androidTestImplementation(libs.espresso.core)
     implementation("androidx.appcompat:appcompat:1.6.1")

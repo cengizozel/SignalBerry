@@ -14,6 +14,9 @@ import java.util.Date;
 import java.util.Locale;
 
 final class Utils {
+
+    /** App accent (Signal blue). Single source for code; XML uses #2196F3. */
+    static final int ACCENT = 0xFF2196F3;
     private Utils() {}
 
     // ── Strings ───────────────────────────────────────────────────────────────

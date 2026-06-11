@@ -218,7 +218,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                 iconColor = night ? 0xFFFFFFFF : 0xFF1565C0;
                 wave.setColors(iconColor, night ? 0x66FFFFFF : 0x4D1565C0);
             } else {
-                iconColor = 0xFF2196F3;
+                iconColor = Utils.ACCENT;
                 wave.setColors(iconColor, 0x66888888);
             }
             tvSpeed.setTextColor(iconColor);
@@ -425,7 +425,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         if (m.quoteText != null && !m.quoteText.isEmpty()) {
             block.setVisibility(View.VISIBLE);
             boolean quoteFromMe = "me".equals(m.quoteAuthor);
-            line.setBackgroundColor(quoteFromMe ? 0xFF4CAF50 : 0xFF2196F3);
+            line.setBackgroundColor(quoteFromMe ? 0xFF4CAF50 : Utils.ACCENT);
             tv.setText((quoteFromMe ? "You: " : "") + m.quoteText);
         } else {
             block.setVisibility(View.GONE);
@@ -458,7 +458,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             case Chat.ST_PENDING:   tv.setText("\u2026");             tv.setTextColor(0xFF9E9E9E); break;
             case Chat.ST_SENT:      tv.setText(at + "\u2713");        tv.setTextColor(0xFF9E9E9E); break;
             case Chat.ST_DELIVERED: tv.setText(at + "\u2713\u2713"); tv.setTextColor(0xFF9E9E9E); break;
-            case Chat.ST_READ:      tv.setText(at + "\u2713\u2713"); tv.setTextColor(0xFF2196F3); break;
+            case Chat.ST_READ:      tv.setText(at + "\u2713\u2713"); tv.setTextColor(Utils.ACCENT); break;
             case Chat.ST_FAILED:    tv.setText("\u2715 failed \u2014 tap to retry"); tv.setTextColor(0xFFD32F2F); break;
             default:                tv.setText(at.trim());
         }

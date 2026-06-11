@@ -26,10 +26,6 @@ final class PeerKeys {
         void onMappingLearned(String uuidKey, String numberKey);
     }
 
-    private static final Pattern UUID_RE = Pattern.compile(
-            "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            Pattern.CASE_INSENSITIVE);
-
     private static final String PREFS = "peer_map";
 
     private static PeerKeys instance;
@@ -55,46 +51,18 @@ final class PeerKeys {
 
     synchronized Map<String, String> allMappings() { return new HashMap<>(uuidToNumber); }
 
-    static boolean isUuidKey(String key) {
-        return key != null && UUID_RE.matcher(key).matches();
-    }
+    static boolean isUuidKey(String key) { return PeerKey.isUuidKey(key); }
 
-    /** Normalize a single identifier: number → digits, uuid → lowercase. */
-    static String normalize(String numberOrUuid) {
-        if (isEmpty(numberOrUuid)) return "";
-        String s = numberOrUuid.trim();
-        if (s.startsWith("group:")) return s; // base64 group id: case-significant
-        if (UUID_RE.matcher(s).matches()) return s.toLowerCase(Locale.US);
-        // service-id forms like "PNI:<uuid>" (sent after a contact changes
-        // phones / re-registers) must key as the uuid — extracting digits from
-        // one forges a fake phone number and forks the conversation
-        java.util.regex.Matcher uuidIn = UUID_SEARCH.matcher(s);
-        if (uuidIn.find()) return uuidIn.group().toLowerCase(Locale.US);
-        String d = digits(s);
-        // no real phone number exceeds 15 digits (E.164) — refuse the forgery
-        return (!d.isEmpty() && d.length() <= 15) ? d : s.toLowerCase(Locale.US);
-    }
+    /** Normalize a single identifier — see {@link PeerKey#normalize}. */
+    static String normalize(String numberOrUuid) { return PeerKey.normalize(numberOrUuid); }
 
-    private static final Pattern UUID_SEARCH = Pattern.compile(
-            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
 
     /**
      * Canonical key for an envelope/contact: number wins; a uuid is translated
      * through the learned map when possible, else used as-is (lowercase).
      */
     synchronized String resolve(String number, String uuid) {
-        if (!isEmpty(number) && number.startsWith("group:")) return number;
-        if (!isEmpty(uuid) && uuid.startsWith("group:")) return uuid;
-        // a uuid smuggled into the number slot must not be digit-stripped
-        if (!isEmpty(number) && UUID_SEARCH.matcher(number).find())
-            return normalize(number);
-        String n = digits(number);
-        if (n.length() > 15) n = "";
-        if (!n.isEmpty()) return n;
-        String u = normalize(uuid);
-        if (u.isEmpty()) return "";
-        String mapped = uuidToNumber.get(u);
-        return mapped != null ? mapped : u;
+        return PeerKey.resolve(number, uuid, uuidToNumber);
     }
 
     /** Record uuid→number; fires the re-key listener on first sighting. */
