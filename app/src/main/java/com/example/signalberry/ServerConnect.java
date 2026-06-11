@@ -42,6 +42,8 @@ public class ServerConnect extends AppCompatActivity {
         EditText cfSecretField  = findViewById(R.id.input_cf_secret);
         final android.view.View remoteSection = findViewById(R.id.remote_section);
         final android.widget.TextView remoteToggle = findViewById(R.id.remote_toggle);
+        final android.view.View cfSection = findViewById(R.id.cf_section);
+        final android.widget.TextView cfToggle = findViewById(R.id.cf_toggle);
 
         // Prefill from last run
         ipField.setText(savedIp);
@@ -50,33 +52,12 @@ public class ServerConnect extends AppCompatActivity {
         tokenField.setText(prefs.getString("bridge_token", ""));
         cfIdField.setText(prefs.getString("cf_access_id", ""));
         cfSecretField.setText(prefs.getString("cf_access_secret", ""));
-        boolean hasRemote = notEmpty(prefs.getString("bridge_token", ""))
-                || notEmpty(prefs.getString("cf_access_id", ""))
-                || notEmpty(prefs.getString("bridge_url_pref", ""));
-        remoteSection.setVisibility(hasRemote ? android.view.View.VISIBLE : android.view.View.GONE);
-        remoteToggle.setText((hasRemote ? "▼" : "▶") + "  Remote access (optional)");
-        findViewById(R.id.remote_info).setOnClickListener(t ->
-                new androidx.appcompat.app.AlertDialog.Builder(this)
-                        .setTitle("Remote access")
-                        .setMessage("Optional. Leave blank to use SignalBerry on your home "
-                                + "WiFi; nothing here is needed for that.\n\n"
-                                + "To use it away from home, your server has to be reachable "
-                                + "over the internet. A Cloudflare Tunnel is the practical way "
-                                + "on BlackBerry (which can't run a VPN), with no open ports.\n\n"
-                                + "These fields secure that connection:\n"
-                                + "• Bridge URL: your server's bridge address\n"
-                                + "• Bridge token: the shared secret that guards your server\n"
-                                + "• CF Access ID/Secret: optional extra Cloudflare gate\n\n"
-                                + "Without a token anyone who finds your address could read and "
-                                + "send your messages, so it's required once you go remote.")
-                        .setPositiveButton("Got it", null)
-                        .show());
 
-        remoteToggle.setOnClickListener(t -> {
-            boolean show = remoteSection.getVisibility() != android.view.View.VISIBLE;
-            remoteSection.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
-            remoteToggle.setText((show ? "▼" : "▶") + "  Remote access (optional)");
-        });
+        boolean hasRemote = notEmpty(prefs.getString("bridge_token", ""))
+                || notEmpty(prefs.getString("bridge_url_pref", ""));
+        boolean hasCf = notEmpty(prefs.getString("cf_access_id", ""));
+        wireSection(remoteToggle, remoteSection, "Remote access", hasRemote);
+        wireSection(cfToggle, cfSection, "Cloudflare Access (optional)", hasCf);
 
         connectBtn.setOnClickListener(v -> {
             String ip = ipField.getText().toString().trim();
@@ -138,6 +119,18 @@ public class ServerConnect extends AppCompatActivity {
                     }
                 });
             }).start();
+        });
+    }
+
+    /** Collapsible section: arrow + label toggles its body's visibility. */
+    private static void wireSection(android.widget.TextView toggle, android.view.View section,
+                                    String label, boolean startExpanded) {
+        section.setVisibility(startExpanded ? android.view.View.VISIBLE : android.view.View.GONE);
+        toggle.setText((startExpanded ? "▼" : "▶") + "  " + label);
+        toggle.setOnClickListener(t -> {
+            boolean show = section.getVisibility() != android.view.View.VISIBLE;
+            section.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
+            toggle.setText((show ? "▼" : "▶") + "  " + label);
         });
     }
 
