@@ -290,6 +290,7 @@ final class Repo {
 
         if (data != null) {
             JSONObject gi = data.optJSONObject("groupInfo");
+            if (gi == null) gi = nestedGroupInfo(data);
             String gid = gi != null ? gi.optString("groupId", "") : "";
             if (gi != null && isEmpty(gid)) return null;
             String sender = peerKeys.resolve(srcNum, srcUuid);
@@ -303,6 +304,7 @@ final class Repo {
             JSONObject sent = sync.optJSONObject("sentMessage");
             if (sent != null) {
                 JSONObject sgi = sent.optJSONObject("groupInfo");
+                if (sgi == null) sgi = nestedGroupInfo(sent);
                 String sgid = sgi != null ? sgi.optString("groupId", "") : "";
                 if (sgi != null && isEmpty(sgid)) return null;
                 String destNum  = firstNonEmpty(safeOptString(sent, "destinationNumber"),
@@ -370,6 +372,14 @@ final class Repo {
             return null;
         }
         return null;
+    }
+
+    /** Edit envelopes nest the group marker inside the new revision. */
+    private static JSONObject nestedGroupInfo(JSONObject msg) {
+        JSONObject em = msg.optJSONObject("editMessage");
+        if (em == null) return null;
+        JSONObject inner = em.optJSONObject("dataMessage");
+        return inner != null ? inner.optJSONObject("groupInfo") : null;
     }
 
     /** Shared shaping for dataMessage and syncMessage.sentMessage. */

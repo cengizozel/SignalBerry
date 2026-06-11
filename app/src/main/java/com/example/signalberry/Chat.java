@@ -1667,8 +1667,16 @@ public class Chat extends AppCompatActivity {
         new Thread(() -> {
             try {
                 String peer = sendRecipient;
-                String targetAuthor = "me".equals(target.from)
-                        ? (notEmpty(myNumber) ? myNumber : peer) : peer;
+                String targetAuthor;
+                if ("me".equals(target.from)) {
+                    targetAuthor = notEmpty(myNumber) ? myNumber : peer;
+                } else if (isGroup && notEmpty(target.author)) {
+                    // group rows know their author (digits key or uuid)
+                    targetAuthor = target.author.matches("\\d+")
+                            ? "+" + target.author : target.author;
+                } else {
+                    targetAuthor = peer;
+                }
                 JSONObject body = new JSONObject();
                 body.put("recipient", peer);
                 body.put("reaction", emoji);
