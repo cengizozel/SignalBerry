@@ -178,6 +178,9 @@ public class Chat extends AppCompatActivity {
         baseSignal = normalizeBase(ipPref);
         chatDbKey = PeerKeys.get(this).resolve(peerNumber, peerUuid);
         openReadTs = prefs.getLong("read_ts_" + chatDbKey, 0);
+        // local alias (set from the conversation list) overrides the passed name
+        String alias = prefs.getString("alias_" + chatDbKey, "");
+        if (notEmpty(alias)) peerName = alias;
 
         // Debug log
         debugLogView    = findViewById(R.id.debug_log);

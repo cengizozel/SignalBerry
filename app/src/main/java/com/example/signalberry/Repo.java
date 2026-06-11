@@ -171,6 +171,10 @@ final class Repo {
             }
             if (prefs.getBoolean("mute_" + uuidKey, false)) ed.putBoolean("mute_" + numberKey, true);
             ed.remove("mute_" + uuidKey);
+            String alias = prefs.getString("alias_" + uuidKey, "");
+            if (notEmpty(alias) && isEmpty(prefs.getString("alias_" + numberKey, "")))
+                ed.putString("alias_" + numberKey, alias);
+            ed.remove("alias_" + uuidKey);
             ed.apply();
         }
         notifyInserted(numberKey);

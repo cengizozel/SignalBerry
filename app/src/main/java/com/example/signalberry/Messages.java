@@ -131,16 +131,20 @@ public class Messages extends AppCompatActivity {
             String key = PeerKeys.get(this).resolve(item.get("number"), item.get("uuid"));
             if (isEmpty(key)) return true;
             boolean muted = prefs.getBoolean("mute_" + key, false);
+            boolean hasAlias = notEmpty(prefs.getString("alias_" + key, ""));
             new AlertDialog.Builder(this)
                     .setTitle(item.get("name"))
                     .setItems(new String[]{
+                            "Set name…",
                             muted ? "Unmute" : "Mute notifications",
                             "Delete conversation (this device)",
                             "Purge conversation (device + bridge)…"
                     }, (d, w) -> {
                         if (w == 0) {
-                            prefs.edit().putBoolean("mute_" + key, !muted).apply();
+                            promptSetAlias(key, item.get("name"));
                         } else if (w == 1) {
+                            prefs.edit().putBoolean("mute_" + key, !muted).apply();
+                        } else if (w == 2) {
                             new AlertDialog.Builder(this)
                                     .setMessage("Delete all messages in this conversation from this device? "
                                             + "(The bridge and your phone keep their copies.)")
@@ -150,7 +154,7 @@ public class Messages extends AppCompatActivity {
                                     }).start())
                                     .setNegativeButton("Cancel", null)
                                     .show();
-                        } else {
+                        } else if (w == 3) {
                             new AlertDialog.Builder(this)
                                     .setMessage("Purge this conversation from this device AND the "
                                             + "bridge server? Your phone's copy is not affected.\n\n"
@@ -415,8 +419,11 @@ public class Messages extends AppCompatActivity {
                 String snippet = s.second[0];
                 String time    = s.second[1];
                 String ts      = s.second[2];
-                String name;
-                synchronized (nameByPeerKey) { name = nameByPeerKey.get(key); }
+                // a user-set local alias wins over anything signal-cli knows —
+                // some contacts have no name in signal-cli at all (no synced
+                // contact name, no profile name) and fall back to their number
+                String name = prefs.getString("alias_" + key, "");
+                if (isEmpty(name)) synchronized (nameByPeerKey) { name = nameByPeerKey.get(key); }
                 if (isEmpty(name)) name = prefs.getString("contact_name_" + key, key);
                 String num    = prefs.getString("contact_num_" + key, "");
                 String uuid   = prefs.getString("contact_uuid_" + key, "");
@@ -459,6 +466,34 @@ public class Messages extends AppCompatActivity {
     }
 
     // ---------------- Self avatar ----------------
+    /** Local rename: store a per-peer alias used everywhere the name is shown.
+     *  Purely local — never sent to Signal or the contact. */
+    private void promptSetAlias(String key, String current) {
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        String existing = prefs.getString("alias_" + key, "");
+        input.setText(existing);
+        input.setSelection(input.getText().length());
+        input.setHint("Name for this contact");
+        new AlertDialog.Builder(this)
+                .setTitle("Set name")
+                .setMessage("Shown only on this device. Not sent to anyone.")
+                .setView(input)
+                .setPositiveButton("Save", (d, w) -> {
+                    String v = input.getText().toString().trim();
+                    if (v.isEmpty()) prefs.edit().remove("alias_" + key).apply();
+                    else prefs.edit().putString("alias_" + key, v).apply();
+                    rebuildListFromDb();
+                })
+                .setNeutralButton(isEmpty(existing) ? null : "Clear",
+                        isEmpty(existing) ? null : (d, w) -> {
+                            prefs.edit().remove("alias_" + key).apply();
+                            rebuildListFromDb();
+                        })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
     private void loadSelfAvatar() {
         ImageView iv = findViewById(R.id.toolbar_avatar);
         int size = (int)(36 * getResources().getDisplayMetrics().density + 0.5f);
