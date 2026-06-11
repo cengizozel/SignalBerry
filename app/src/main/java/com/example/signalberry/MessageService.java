@@ -111,7 +111,15 @@ public class MessageService extends Service {
                     // reconnect = catch up what the socket missed + retry unreported sends
                     new Thread(() -> {
                         Repo repo = Repo.get(MessageService.this);
-                        repo.catchUp();
+                        repo.catchUp((peerKey, count, snippet) -> {
+                            SharedPreferences p2 = getSharedPreferences("signalberry", MODE_PRIVATE);
+                            if (p2.getBoolean("mute_" + peerKey, false)) return;
+                            String name = p2.getString("contact_name_" + peerKey, peerKey);
+                            String num  = p2.getString("contact_num_" + peerKey, "");
+                            String uuid = p2.getString("contact_uuid_" + peerKey, "");
+                            showMessageNotif(peerKey, name,
+                                    count > 1 ? count + " new messages" : snippet, num, uuid);
+                        });
                         repo.drainReportQueue();
                     }, "ws-catchup").start();
                 }
@@ -153,6 +161,7 @@ public class MessageService extends Service {
             SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
             String openPeer = prefs.getString("open_chat_peer", "");
             if (r.peerKey.equals(openPeer)) return;
+            if (prefs.getBoolean("mute_" + r.peerKey, false)) return;
 
             String name = prefs.getString("contact_name_" + r.peerKey, "");
             String srcNum  = env.optString("sourceNumber", "");

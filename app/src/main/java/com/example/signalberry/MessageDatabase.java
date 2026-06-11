@@ -33,7 +33,7 @@ import static com.example.signalberry.Utils.*;
 class MessageDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME    = "signalberry.db";
-    private static final int    DB_VERSION = 6;
+    private static final int    DB_VERSION = 7;
     private static final String T          = "messages";
 
     // status values
@@ -69,7 +69,9 @@ class MessageDatabase extends SQLiteOpenHelper {
                 "edit_history TEXT," +
                 "last_edit_ts INTEGER NOT NULL DEFAULT 0," +
                 "client_nonce INTEGER NOT NULL DEFAULT 0," +
-                "reported     INTEGER NOT NULL DEFAULT 1" + // only app-confirmed sends start at 0
+                "reported     INTEGER NOT NULL DEFAULT 1," + // only app-confirmed sends start at 0
+                "expire_s     INTEGER NOT NULL DEFAULT 0," + // disappearing-message timer
+                "expire_at    INTEGER NOT NULL DEFAULT 0" +  // armed deadline (0 = not armed)
                 ")");
         db.execSQL("CREATE INDEX idx_peer_ts ON " + T + "(peer_key, server_ts)");
         createIdentityIndex(db);
@@ -86,6 +88,10 @@ class MessageDatabase extends SQLiteOpenHelper {
         if (old < 4) db.execSQL("ALTER TABLE " + T + " ADD COLUMN last_edit_ts INTEGER NOT NULL DEFAULT 0");
         if (old < 5) db.execSQL("DELETE FROM " + T + " WHERE msg_type='text' AND text='null'");
         if (old < 6) migrateV6(db);
+        if (old < 7) {
+            db.execSQL("ALTER TABLE " + T + " ADD COLUMN expire_s INTEGER NOT NULL DEFAULT 0");
+            db.execSQL("ALTER TABLE " + T + " ADD COLUMN expire_at INTEGER NOT NULL DEFAULT 0");
+        }
     }
 
     /** v5→v6: REDESIGN.md §3.6 steps 1-6 (step 7, the bridge reconcile, runs in
@@ -495,6 +501,45 @@ class MessageDatabase extends SQLiteOpenHelper {
             db.endTransaction();
         }
         return true;
+    }
+
+    /** Record a disappearing-message timer on an existing row. Outgoing rows arm
+     *  immediately (timer runs from send); incoming arm when read (sweep). */
+    void setExpiry(String peerKey, String dir, long serverTs, int expireS) {
+        if (expireS <= 0) return;
+        long armedAt = "out".equals(dir) ? serverTs + expireS * 1000L : 0;
+        getWritableDatabase().execSQL(
+                "UPDATE " + T + " SET expire_s=?, expire_at=? WHERE peer_key=? AND dir=? AND server_ts=?",
+                new Object[]{expireS, armedAt, peerKey, dir, serverTs});
+    }
+
+    /** Two-phase expiry sweep. @return peers whose rows were deleted. */
+    java.util.Set<String> sweepExpiry(java.util.Map<String, Long> readTsByPeer) {
+        SQLiteDatabase db = getWritableDatabase();
+        long now = System.currentTimeMillis();
+        // phase A: arm incoming rows whose peer watermark passed them
+        Cursor c = db.rawQuery("SELECT DISTINCT peer_key FROM " + T +
+                " WHERE expire_s>0 AND expire_at=0 AND dir='in'", null);
+        List<String> peers = new ArrayList<>();
+        while (c.moveToNext()) peers.add(c.getString(0));
+        c.close();
+        for (String pk : peers) {
+            Long readTs = readTsByPeer.get(pk);
+            if (readTs == null || readTs <= 0) continue;
+            db.execSQL("UPDATE " + T + " SET expire_at=?+expire_s*1000 " +
+                    "WHERE peer_key=? AND dir='in' AND expire_s>0 AND expire_at=0 AND server_ts<=?",
+                    new Object[]{now, pk, readTs});
+        }
+        // phase B: hard-delete due rows
+        java.util.Set<String> affected = new HashSet<>();
+        Cursor d = db.rawQuery("SELECT DISTINCT peer_key FROM " + T +
+                " WHERE expire_at>0 AND expire_at<?", new String[]{String.valueOf(now)});
+        while (d.moveToNext()) affected.add(d.getString(0));
+        d.close();
+        if (!affected.isEmpty())
+            db.execSQL("DELETE FROM " + T + " WHERE expire_at>0 AND expire_at<?",
+                    new Object[]{now});
+        return affected;
     }
 
     /** Attachment row lookup for the reconcile attachment leg + sent-image merge. */

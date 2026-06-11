@@ -76,6 +76,7 @@ final class Repo {
                 io.execute(() -> rekeyWithPrefs(uuidKey, numberKey));
             }
         });
+        sweepExpiry();
         io.execute(() -> {
             synchronized (writeLock) { db.failStalePendings(10 * 60_000L); }
             // re-keys for mappings learned before this Repo (and its listener)
@@ -106,6 +107,25 @@ final class Repo {
             if (ts > prefs.getLong("read_ts_" + peerKey, 0))
                 prefs.edit().putLong("read_ts_" + peerKey, ts).apply();
         }
+        sweepExpiry();
+    }
+
+    /** Honor disappearing-message timers (REDESIGN exception now closed app-side;
+     *  the bridge's copy is a documented follow-up). */
+    void sweepExpiry() {
+        io.execute(() -> {
+            try {
+                Map<String, Long> readTs = new HashMap<>();
+                for (Map.Entry<String, ?> e : prefs.getAll().entrySet())
+                    if (e.getKey().startsWith("read_ts_") && e.getValue() instanceof Long)
+                        readTs.put(e.getKey().substring(8), (Long) e.getValue());
+                java.util.Set<String> affected;
+                synchronized (writeLock) { affected = db.sweepExpiry(readTs); }
+                for (String pk : affected) notifyInserted(pk);
+            } catch (Exception e) {
+                DebugLog.log("expiry sweep: " + e);
+            }
+        });
     }
 
     void setSelf(String number, String uuid) {
@@ -343,6 +363,10 @@ final class Repo {
                 return null; // nothing visible (e.g. expiration-timer update)
             }
         }
+        int expireS = msg.optInt("expiresInSeconds", 0);
+        if (expireS > 0) {
+            synchronized (writeLock) { db.setExpiry(peer, dir, ts, expireS); }
+        }
         if (inserted) notifyInserted(peer);
         else notifyChanged(peer, ts);
         return new IngestResult(peer, dir, inserted, snippet);
@@ -577,15 +601,36 @@ final class Repo {
 
     List<MessageItem> getThread(String peerKey) { return db.getMessages(peerKey); }
 
+    /** Device-local thread wipe: rows gone entirely (no tombstones — the next
+     *  catch-up would re-deliver, so also pin the cursor watermark forward). */
+    void deleteThread(String peerKey) {
+        synchronized (writeLock) {
+            db.getWritableDatabase().execSQL(
+                    "DELETE FROM messages WHERE peer_key=?", new Object[]{peerKey});
+        }
+        // suppress re-delivery from the change feed: mark everything read+notified
+        long now = System.currentTimeMillis();
+        advanceReadTs(peerKey, now);
+        prefs.edit().putLong("notified_ts_" + peerKey, now)
+                .putLong("thread_cleared_ts_" + peerKey, now).apply();
+        notifyInserted(peerKey);
+    }
+
     // ── bridge change-feed catch-up ───────────────────────────────────────────
 
     private static final int PAGE = 200;
 
+    interface CatchUpNotifier { void onMissed(String peerKey, int count, String snippet); }
+
+    void catchUp() { catchUp(null); }
+
     /** Drain /v2/changes from the stored cursor. Runs on the caller's thread;
      *  single-flight (concurrent calls would race the cursor pref). The first
      *  drain after migration runs in reconcile mode (§3.6 step 7): legacy
-     *  local-clock rows adopt the bridge's Signal ts instead of duplicating. */
-    void catchUp() {
+     *  local-clock rows adopt the bridge's Signal ts instead of duplicating.
+     *  With a notifier (the service passes one), missed incoming messages
+     *  beyond each peer's notified watermark are reported after the drain. */
+    void catchUp(CatchUpNotifier notifier) {
         synchronized (catchUpLock) {
             String base = prefs.getString("bridge", "");
             if (isEmpty(base)) return;
@@ -617,6 +662,7 @@ final class Repo {
                     // safe cursor is the MIN of the two bounds.
                     long itemsBound = Long.MAX_VALUE, markersBound = Long.MAX_VALUE;
                     java.util.Set<String> touched = new java.util.HashSet<>();
+                    if (missedIn == null) missedIn = new HashMap<>();
                     if (items != null) {
                         for (int i = 0; i < items.length(); i++) {
                             JSONObject row = items.optJSONObject(i);
@@ -624,6 +670,15 @@ final class Repo {
                             try {
                                 String peer = ingestBridgeRow(row, reconcile);
                                 if (notEmpty(peer)) touched.add(peer);
+                                if (notEmpty(peer) && !reconcile && "in".equals(row.optString("dir"))
+                                        && row.optLong("serverTs", 0) > prefs.getLong("notified_ts_" + peer, 0)) {
+                                    Object[] cur = missedIn.get(peer);
+                                    long ts = row.optLong("serverTs", 0);
+                                    String snip = row.optString("body", "");
+                                    if (cur == null || ts > (Long) cur[1])
+                                        missedIn.put(peer, new Object[]{(cur == null ? 1 : (Integer) cur[0] + 1), ts, snip});
+                                    else cur[0] = (Integer) cur[0] + 1;
+                                }
                             } catch (Exception rowEx) {
                                 DebugLog.log("poison feed row seq=" + row.optLong("modSeq", -1) + ": " + rowEx);
                             }
@@ -658,11 +713,23 @@ final class Repo {
                             .putLong("bridge_seq", cursor).apply();
                     DebugLog.log("reconcile complete at seq " + cursor);
                 }
+                if (notifier != null && missedIn != null) {
+                    String openPeer = prefs.getString("open_chat_peer", "");
+                    for (Map.Entry<String, Object[]> e : missedIn.entrySet()) {
+                        if (e.getKey().equals(openPeer)) continue;
+                        Object[] v = e.getValue();
+                        notifier.onMissed(e.getKey(), (Integer) v[0], v[2] == null ? "" : (String) v[2]);
+                        prefs.edit().putLong("notified_ts_" + e.getKey(), (Long) v[1]).apply();
+                    }
+                }
+                missedIn = null;
             } catch (Exception e) {
                 DebugLog.log("catchUp failed: " + e);
             }
         }
     }
+
+    private Map<String, Object[]> missedIn; // peer -> [count, maxTs, snippet]; guarded by catchUpLock
 
     /** Apply one /v2/changes row. Steady-state rules (REDESIGN §3.6): identity
      *  upsert; status=MAX; bridge body/edits/deletes adopt; local-only fields
@@ -686,6 +753,7 @@ final class Repo {
         String quoteAuthor = isEmpty(quoteAuthorRaw) ? null
                 : (quoteAuthorRaw.equals(selfNumber) || quoteAuthorRaw.equals(selfUuid)) ? "me" : "peer";
 
+        if (ts <= prefs.getLong("thread_cleared_ts_" + peer, 0)) return ""; // user wiped this thread
         boolean isText = "text".equals(kind);
         synchronized (writeLock) {
             if (row.optBoolean("deleted")) {

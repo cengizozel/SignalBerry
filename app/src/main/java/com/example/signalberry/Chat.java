@@ -95,7 +95,9 @@ public class Chat extends AppCompatActivity {
 
     // Scroll state: only auto-scroll when the user is already at the bottom
     private boolean atBottom = true;
-    private int unseenWhileScrolled = 0;
+    private long lastSeenTs = 0;      // max serverTs rendered while at bottom
+    private long openReadTs = 0;      // watermark when the chat was opened
+    private boolean firstLoad = true;
     private android.widget.FrameLayout btnJumpBottom;
     private android.widget.TextView tvJumpUnread;
 
@@ -175,6 +177,7 @@ public class Chat extends AppCompatActivity {
 
         baseSignal = normalizeBase(ipPref);
         chatDbKey = PeerKeys.get(this).resolve(peerNumber, peerUuid);
+        openReadTs = prefs.getLong("read_ts_" + chatDbKey, 0);
 
         // Debug log
         debugLogView    = findViewById(R.id.debug_log);
@@ -422,13 +425,17 @@ public class Chat extends AppCompatActivity {
         DebugLog.unregister(debugListener);
     }
 
-    /** Read watermark = max server_ts actually rendered (never the wall clock —
-     *  the Q10's clock drifts and wall-clock watermarks created phantom unread). */
+    /** Read watermark = max server_ts actually SEEN (at bottom) — never the wall
+     *  clock, and never burned just by opening the chat with 40 unread. */
     private void advanceReadWatermark() {
+        if (!atBottom) return;
         long max = 0;
         for (MessageItem m : rawItems)
             if (m.serverTs > max) max = m.serverTs;
-        if (max > 0) repo.advanceReadTs(chatDbKey, max);
+        if (max > 0) {
+            repo.advanceReadTs(chatDbKey, max);
+            lastSeenTs = max;
+        }
     }
 
     // -------------------- SEND --------------------
@@ -764,15 +771,34 @@ public class Chat extends AppCompatActivity {
             }
             displayItems.add(m);
         }
+        // first open with unread history: divider + land on first unread
+        int firstUnreadPos = -1;
+        if (firstLoad && openReadTs > 0) {
+            for (int i = 0; i < displayItems.size(); i++) {
+                MessageItem m = displayItems.get(i);
+                if (m.type != MessageItem.TYPE_DATE_HEADER && "peer".equals(m.from)
+                        && m.serverTs > openReadTs) { firstUnreadPos = i; break; }
+            }
+            if (firstUnreadPos > 0) {
+                int n = 0;
+                for (MessageItem m : displayItems)
+                    if (m.type != MessageItem.TYPE_DATE_HEADER && "peer".equals(m.from)
+                            && m.serverTs > openReadTs) n++;
+                displayItems.add(firstUnreadPos, new MessageItem("— " + n + " unread —", true));
+            }
+        }
         chatAdapter.notifyDataSetChanged();
-        if (displayItems.isEmpty()) return;
-        if (atBottom) {
+        if (displayItems.isEmpty()) { firstLoad = false; return; }
+        if (firstLoad && firstUnreadPos > 0) {
+            atBottom = false;
+            recycler.scrollToPosition(firstUnreadPos);
+            updateJumpButton();
+        } else if (atBottom) {
             recycler.scrollToPosition(displayItems.size() - 1);
         } else {
-            // don't yank the user out of scrollback; surface a hint instead
-            unseenWhileScrolled++;
             updateJumpButton();
         }
+        firstLoad = false;
         if (chatSearchBar != null && chatSearchBar.getVisibility() == android.view.View.VISIBLE)
             runSearch(chatSearchInput.getText().toString());
     }
@@ -780,15 +806,21 @@ public class Chat extends AppCompatActivity {
     private void setAtBottom(boolean value) {
         if (atBottom == value) return;
         atBottom = value;
-        if (atBottom) unseenWhileScrolled = 0;
+        if (atBottom) advanceReadWatermark();
         updateJumpButton();
     }
 
     private void updateJumpButton() {
         if (btnJumpBottom == null) return;
         btnJumpBottom.setVisibility(atBottom ? android.view.View.GONE : android.view.View.VISIBLE);
-        if (!atBottom && unseenWhileScrolled > 0) {
-            tvJumpUnread.setText(String.valueOf(unseenWhileScrolled));
+        int unseen = 0;
+        if (!atBottom) {
+            long basis = Math.max(lastSeenTs, openReadTs);
+            for (MessageItem m : rawItems)
+                if ("peer".equals(m.from) && m.serverTs > basis) unseen++;
+        }
+        if (unseen > 0) {
+            tvJumpUnread.setText(String.valueOf(unseen));
             tvJumpUnread.setVisibility(android.view.View.VISIBLE);
         } else {
             tvJumpUnread.setVisibility(android.view.View.GONE);

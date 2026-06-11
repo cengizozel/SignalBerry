@@ -125,6 +125,36 @@ public class Messages extends AppCompatActivity {
         plus.setOnClickListener(v ->
                 startActivity(new android.content.Intent(Messages.this, NewChat.class)));
 
+        list.setOnItemLongClickListener((parent, view, position, id) -> {
+            @SuppressWarnings("unchecked")
+            Map<String, String> item = (Map<String, String>) parent.getItemAtPosition(position);
+            String key = PeerKeys.get(this).resolve(item.get("number"), item.get("uuid"));
+            if (isEmpty(key)) return true;
+            boolean muted = prefs.getBoolean("mute_" + key, false);
+            new AlertDialog.Builder(this)
+                    .setTitle(item.get("name"))
+                    .setItems(new String[]{
+                            muted ? "Unmute" : "Mute notifications",
+                            "Delete conversation"
+                    }, (d, w) -> {
+                        if (w == 0) {
+                            prefs.edit().putBoolean("mute_" + key, !muted).apply();
+                        } else {
+                            new AlertDialog.Builder(this)
+                                    .setMessage("Delete all messages in this conversation from this device? "
+                                            + "(Your phone keeps its copy.)")
+                                    .setPositiveButton("Delete", (dd, ww) -> new Thread(() -> {
+                                        repo.deleteThread(key);
+                                        runOnUiThread(this::rebuildListFromDb);
+                                    }).start())
+                                    .setNegativeButton("Cancel", null)
+                                    .show();
+                        }
+                    })
+                    .show();
+            return true;
+        });
+
         String host = prefs.getString("ip", "");
         myNumber    = prefs.getString("number", "");
         restBase    = normalizeBase(host);
