@@ -1,0 +1,78 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="horizontal" android:padding="4dp">
+
+    <LinearLayout
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:background="@drawable/bg_bubble_peer"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/quoteBlock"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:background="@color/colorQuotePeer"
+            android:paddingTop="4dp" android:paddingBottom="4dp" android:paddingEnd="6dp"
+            android:visibility="gone">
+            <View
+                android:id="@+id/quoteLine"
+                android:layout_width="3dp" android:layout_height="match_parent"
+                android:layout_marginEnd="6dp"
+                android:background="#2196F3"/>
+            <TextView
+                android:id="@+id/tvQuote"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:maxLines="2" android:ellipsize="end"
+                android:textSize="12sp" android:textColor="@color/colorTextPrimary"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/playerRow"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <TextView
+                android:id="@+id/btnPlay"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:paddingLeft="6dp" android:paddingRight="10dp"
+                android:paddingTop="4dp" android:paddingBottom="4dp"
+                android:textSize="18sp"
+                android:textColor="#2196F3"/>
+            <com.example.signalberry.WaveformView
+                android:id="@+id/waveform"
+                android:layout_width="150dp" android:layout_height="32dp"/>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginTop="2dp">
+            <TextView
+                android:id="@+id/tvDur"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textColor="@color/colorTextSecondary" android:textSize="11sp"/>
+            <TextView
+                android:id="@+id/tvSpeed"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:paddingLeft="10dp" android:paddingRight="6dp"
+                android:textStyle="bold"
+                android:textColor="#2196F3" android:textSize="11sp"
+                android:visibility="gone"/>
+            <View android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1"/>
+            <TextView
+                android:id="@+id/tvStamp"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textColor="@color/colorTextSecondary" android:textSize="11sp"/>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvReactions"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textSize="18sp"
+            android:paddingTop="2dp" android:paddingBottom="2dp"
+            android:visibility="gone"/>
+    </LinearLayout>
+
+    <View android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1"/>
+</LinearLayout>

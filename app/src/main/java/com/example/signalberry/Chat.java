@@ -229,6 +229,10 @@ public class Chat extends AppCompatActivity {
             ((android.widget.TextView) findViewById(R.id.title_name)).setText(peerName);
         }
         chatAdapter = new ChatAdapter(displayItems, baseSignal, this);
+        chatAdapter.setAudioUi(audioUi);
+        RecyclerView.ItemAnimator anim = recycler.getItemAnimator();
+        if (anim instanceof androidx.recyclerview.widget.SimpleItemAnimator)
+            ((androidx.recyclerview.widget.SimpleItemAnimator) anim).setSupportsChangeAnimations(false);
         chatAdapter.setOnImageClickListener(pos -> {
             if (pos < 0 || pos >= displayItems.size()) return;
             MessageItem tapped = displayItems.get(pos);
@@ -323,7 +327,7 @@ public class Chat extends AppCompatActivity {
                 return;
             }
             if (m.status == ST_FAILED && "me".equals(m.from)) { retryFailedSend(m); return; }
-            if ("audio".equals(m.msgType)) playAudioFor(m);
+            if ("audio".equals(m.msgType)) handlePlayPause(m);
         });
 
         // Selection bar
@@ -440,6 +444,7 @@ public class Chat extends AppCompatActivity {
     @Override protected void onPause() {
         super.onPause();
         if (recorder != null) stopRecording(false);
+        stopVoice();
         handler.removeCallbacks(typingStopRun);
         handler.removeCallbacks(typingHideRun);
         handler.removeCallbacks(reloadRun);
@@ -858,19 +863,163 @@ public class Chat extends AppCompatActivity {
         }).start();
     }
 
-    /** Play a voice note: local copy first (covers our own sends, which may
-     *  have no attachment id), then the store cache, then a network fetch. */
-    private void playAudioFor(MessageItem m) {
+    // -------------------- VOICE NOTE PLAYER UI --------------------
+
+    private VoiceNotePlayer voicePlayer;
+    private long voiceActiveTs;
+    private float voiceSpeed = 1f;
+    private static final android.util.LruCache<String, float[]> WAVE_CACHE =
+            new android.util.LruCache<>(64);
+    private static final java.util.Map<String, Long> DUR_CACHE = new java.util.HashMap<>();
+    private final java.util.Set<String> waveInFlight = new java.util.HashSet<>();
+    private static final int WAVE_BARS = 24;
+
+    private final Runnable voiceTick = new Runnable() {
+        @Override public void run() {
+            if (voicePlayer != null && voicePlayer.isAlive()) {
+                notifyAudioItem(voiceActiveTs);
+                if (voicePlayer.isPlaying()) handler.postDelayed(this, 400);
+            }
+        }
+    };
+
+    private java.io.File audioFileOf(MessageItem m) {
         if (m.localUri != null && m.localUri.startsWith("/")) {
             java.io.File f = new java.io.File(m.localUri);
-            if (f.exists()) { playAudioInline(f); return; }
+            if (f.exists()) return f;
         }
         if (!isEmpty(m.attachmentId)) {
-            AttachmentStore store = AttachmentStore.get(this);
-            if (store.has(m.attachmentId)) { playAudioInline(store.fileFor(m.attachmentId)); return; }
+            AttachmentStore s = AttachmentStore.get(this);
+            if (s.has(m.attachmentId)) return s.fileFor(m.attachmentId);
         }
-        openExternally(m); // fetches by attachment id, then plays inline
+        return null;
     }
+
+    private void notifyAudioItem(long ts) {
+        if (ts == 0) return;
+        for (int i = 0; i < displayItems.size(); i++)
+            if (displayItems.get(i).serverTs == ts) { chatAdapter.notifyItemChanged(i); return; }
+    }
+
+    private void stopVoice() {
+        if (voicePlayer != null) { voicePlayer.release(); voicePlayer = null; }
+        handler.removeCallbacks(voiceTick);
+        long old = voiceActiveTs;
+        voiceActiveTs = 0;
+        notifyAudioItem(old);
+    }
+
+    private void handlePlayPause(MessageItem m) {
+        if (voicePlayer != null && m.serverTs == voiceActiveTs && voicePlayer.isAlive()) {
+            if (voicePlayer.isPlaying()) voicePlayer.pause();
+            else { voicePlayer.resume(); handler.post(voiceTick); }
+            notifyAudioItem(voiceActiveTs);
+            return;
+        }
+        stopVoice();
+        java.io.File f = audioFileOf(m);
+        if (f == null) {
+            if (isEmpty(m.attachmentId)) return;
+            Toast.makeText(this, "Downloading\u2026", Toast.LENGTH_SHORT).show();
+            final String attId = m.attachmentId;
+            new Thread(() -> {
+                java.io.File got = AttachmentStore.get(this).fetch(baseSignal, attId);
+                runOnUiThread(() -> {
+                    if (got == null) Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show();
+                    else startVoice(m, got);
+                });
+            }).start();
+            return;
+        }
+        startVoice(m, f);
+    }
+
+    private void startVoice(MessageItem m, java.io.File f) {
+        voiceActiveTs = m.serverTs;
+        voicePlayer = new VoiceNotePlayer(f, voiceSpeed, new VoiceNotePlayer.Listener() {
+            @Override public void onCompleted() { stopVoice(); }
+            @Override public void onError() {
+                stopVoice();
+                Toast.makeText(Chat.this, "Cannot play this audio", Toast.LENGTH_SHORT).show();
+            }
+        });
+        voicePlayer.start();
+        ensureWave(m, f);
+        handler.post(voiceTick);
+        notifyAudioItem(voiceActiveTs);
+    }
+
+    private void ensureWave(MessageItem m, java.io.File f) {
+        final String key = f.getAbsolutePath();
+        if (WAVE_CACHE.get(key) != null || waveInFlight.contains(key)) return;
+        waveInFlight.add(key);
+        final long ts = m.serverTs;
+        new Thread(() -> {
+            VoiceNotePlayer.WaveResult r = VoiceNotePlayer.waveform(f, WAVE_BARS);
+            runOnUiThread(() -> {
+                waveInFlight.remove(key);
+                if (r != null) {
+                    WAVE_CACHE.put(key, r.levels);
+                    DUR_CACHE.put(key, r.durMs);
+                    notifyAudioItem(ts);
+                }
+            });
+        }).start();
+    }
+
+    private static String clock(long ms) {
+        long s = Math.max(0, ms) / 1000;
+        return (s / 60) + ":" + String.format(java.util.Locale.US, "%02d", s % 60);
+    }
+
+    private static String speedText(float s) {
+        return (s == (long) s ? String.valueOf((long) s) : String.valueOf(s)) + "\u00D7";
+    }
+
+    private final ChatAdapter.AudioUi audioUi = new ChatAdapter.AudioUi() {
+        @Override public boolean isActive(MessageItem m) {
+            return voicePlayer != null && m.serverTs == voiceActiveTs;
+        }
+        @Override public boolean isPlaying(MessageItem m) {
+            return isActive(m) && voicePlayer.isPlaying();
+        }
+        @Override public float progress(MessageItem m) {
+            if (!isActive(m) || voicePlayer.getDurMs() <= 0) return 0f;
+            return voicePlayer.getPosMs() / (float) voicePlayer.getDurMs();
+        }
+        @Override public String speedLabel() { return speedText(voiceSpeed); }
+        @Override public String durLabel(MessageItem m) {
+            if (isActive(m) && voicePlayer.getDurMs() > 0)
+                return clock(voicePlayer.getPosMs()) + " / " + clock(voicePlayer.getDurMs());
+            java.io.File f = audioFileOf(m);
+            if (f != null) {
+                Long d = DUR_CACHE.get(f.getAbsolutePath());
+                if (d != null) return clock(d);
+                ensureWave(m, f);
+            }
+            return "Voice message";
+        }
+        @Override public float[] wave(MessageItem m) {
+            java.io.File f = audioFileOf(m);
+            if (f == null) return null;
+            float[] w = WAVE_CACHE.get(f.getAbsolutePath());
+            if (w == null) ensureWave(m, f);
+            return w;
+        }
+        @Override public void onPlayPause(MessageItem m) { handlePlayPause(m); }
+        @Override public void onSeek(MessageItem m, float fraction) {
+            if (!isActive(m)) return;
+            voicePlayer.seekTo(fraction);
+            handler.removeCallbacks(voiceTick);
+            handler.post(voiceTick);
+        }
+        @Override public void onCycleSpeed(MessageItem m) {
+            voiceSpeed = voiceSpeed == 1f ? 1.5f : voiceSpeed == 1.5f ? 2f
+                    : voiceSpeed == 2f ? 0.5f : 1f;
+            if (voicePlayer != null) voicePlayer.setSpeed(voiceSpeed);
+            notifyAudioItem(voiceActiveTs);
+        }
+    };
 
     private android.media.MediaPlayer audioPlayer;
 

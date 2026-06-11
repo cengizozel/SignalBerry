@@ -74,9 +74,9 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             case VIEW_ME_IMAGE:
                 return new MeImageVH(inf.inflate(R.layout.item_chat_me_image, parent, false));
             case VIEW_ME_AUDIO:
-                return new MeAudioVH(inf.inflate(R.layout.item_chat_me, parent, false));
+                return new AudioVH(inf.inflate(R.layout.item_chat_me_audio, parent, false), true);
             case VIEW_PEER_AUDIO:
-                return new PeerAudioVH(inf.inflate(R.layout.item_chat_peer, parent, false));
+                return new AudioVH(inf.inflate(R.layout.item_chat_peer_audio, parent, false), false);
             case VIEW_DATE_HEADER:
                 return new DateHeaderVH(inf.inflate(R.layout.item_date_header, parent, false));
             default:
@@ -98,8 +98,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         boolean highlighted = highlightTs != 0 && m.serverTs == highlightTs;
         h.itemView.setBackgroundColor(selected ? 0x331976D2
                 : highlighted ? 0x33FFC107 : android.graphics.Color.TRANSPARENT);
-        if (h instanceof MeAudioVH)        ((MeAudioVH) h).bind(m);
-        else if (h instanceof PeerAudioVH) ((PeerAudioVH) h).bind(m);
+        if (h instanceof AudioVH)          ((AudioVH) h).bind(m);
         else if (h instanceof MeTextVH)    ((MeTextVH) h).bind(m);
         else if (h instanceof PeerTextVH)  ((PeerTextVH) h).bind(m);
         else if (h instanceof MeImageVH)   ((MeImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
@@ -166,27 +165,78 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
     }
 
-    // ---- audio VHs: compact voice-note bubble on the text layouts ----
-    private static CharSequence voiceLabel() {
-        android.text.SpannableString s = new android.text.SpannableString("\u25B6  Voice message");
-        s.setSpan(new android.text.style.ForegroundColorSpan(0xFF2196F3), 0, 1, 0);
-        s.setSpan(new android.text.style.RelativeSizeSpan(1.15f), 0, 1, 0);
-        return s;
+    // ---- audio VHs: inline voice-note player ----
+
+    /** Chat supplies playback state + actions; the adapter only renders. */
+    interface AudioUi {
+        boolean isActive(MessageItem m);
+        boolean isPlaying(MessageItem m);
+        float progress(MessageItem m);
+        String speedLabel();
+        String durLabel(MessageItem m);
+        float[] wave(MessageItem m);
+        void onPlayPause(MessageItem m);
+        void onSeek(MessageItem m, float fraction);
+        void onCycleSpeed(MessageItem m);
     }
 
-    static class MeAudioVH extends MeTextVH {
-        MeAudioVH(@NonNull View v) { super(v); }
-        @Override void bind(MessageItem m) {
-            super.bind(m);
-            if (m.status != Chat.ST_REMOTE_DELETED) tvMessage.setText(voiceLabel());
+    private AudioUi audioUi;
+    void setAudioUi(AudioUi ui) { this.audioUi = ui; }
+
+    class AudioVH extends RecyclerView.ViewHolder {
+        final LinearLayout quoteBlock;
+        final View quoteLine, playerRow;
+        final TextView tvQuote, btnPlay, tvDur, tvSpeed, tvStamp, tvReactions;
+        final WaveformView wave;
+        final boolean me;
+        AudioVH(@NonNull View v, boolean me) {
+            super(v);
+            this.me     = me;
+            quoteBlock  = v.findViewById(R.id.quoteBlock);
+            quoteLine   = v.findViewById(R.id.quoteLine);
+            tvQuote     = v.findViewById(R.id.tvQuote);
+            playerRow   = v.findViewById(R.id.playerRow);
+            btnPlay     = v.findViewById(R.id.btnPlay);
+            wave        = v.findViewById(R.id.waveform);
+            tvDur       = v.findViewById(R.id.tvDur);
+            tvSpeed     = v.findViewById(R.id.tvSpeed);
+            tvStamp     = v.findViewById(R.id.tvStamp);
+            tvReactions = v.findViewById(R.id.tvReactions);
+            // me-bubble bg is dark blue: white bars read better than blue
+            if (me) wave.setColors(0xFFFFFFFF, 0x66FFFFFF);
+            else    wave.setColors(0xFF2196F3, 0x66888888);
         }
-    }
-
-    static class PeerAudioVH extends PeerTextVH {
-        PeerAudioVH(@NonNull View v) { super(v); }
-        @Override void bind(MessageItem m) {
-            super.bind(m);
-            if (m.status != Chat.ST_REMOTE_DELETED) tvMessage.setText(voiceLabel());
+        void bind(MessageItem m) {
+            final AudioUi ui = audioUi;
+            if (m.status == Chat.ST_REMOTE_DELETED) {
+                playerRow.setVisibility(View.GONE);
+                tvSpeed.setVisibility(View.GONE);
+                tvDur.setText("Message deleted");
+                tvDur.setTypeface(null, android.graphics.Typeface.ITALIC);
+                if (me) tvStamp.setText("");
+                else bindPeerTime(m, tvStamp);
+                quoteBlock.setVisibility(View.GONE);
+                tvReactions.setVisibility(View.GONE);
+                return;
+            }
+            tvDur.setTypeface(null, android.graphics.Typeface.NORMAL);
+            playerRow.setVisibility(View.VISIBLE);
+            boolean active = ui != null && ui.isActive(m);
+            btnPlay.setText(ui != null && ui.isPlaying(m) ? "\u25AA\u25AA" : "\u25B6");
+            wave.setLevels(ui != null ? ui.wave(m) : null);
+            wave.setProgress(active ? ui.progress(m) : 0f);
+            wave.setSeekable(active);
+            wave.setOnSeekListener(f -> { if (audioUi != null) audioUi.onSeek(m, f); });
+            tvSpeed.setVisibility(active ? View.VISIBLE : View.GONE);
+            tvSpeed.setText(ui != null ? ui.speedLabel() : "1\u00D7");
+            tvDur.setText(ui != null ? ui.durLabel(m) : "Voice message");
+            btnPlay.setOnClickListener(v -> { if (audioUi != null) audioUi.onPlayPause(m); });
+            tvSpeed.setOnClickListener(v -> { if (audioUi != null) audioUi.onCycleSpeed(m); });
+            btnPlay.setOnLongClickListener(v -> itemView.performLongClick());
+            if (me) bindStatus(m, tvStamp);
+            else bindPeerTime(m, tvStamp);
+            bindQuote(m, quoteBlock, quoteLine, tvQuote);
+            bindReactions(m, tvReactions);
         }
     }
 
