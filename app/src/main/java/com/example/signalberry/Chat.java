@@ -24,36 +24,33 @@ import org.json.JSONObject;
 import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 import static com.example.signalberry.Utils.*;
 
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
-import okhttp3.WebSocket;
-import okhttp3.WebSocketListener;
-import okio.ByteString;
-
+/**
+ * Chat screen. Pure Repo observer (REDESIGN §3.1): no WebSocket, no polling,
+ * no envelope parsing here — MessageService owns the socket, Repo owns the DB,
+ * this activity renders Repo.getThread() and reacts to listener events.
+ */
 public class Chat extends AppCompatActivity {
 
-    static final int ST_PENDING   = 0;
-    static final int ST_SENT      = 1;
-    static final int ST_DELIVERED = 2;
-    static final int ST_READ      = 3;
+    static final int ST_FAILED    = MessageDatabase.ST_FAILED;
+    static final int ST_PENDING   = MessageDatabase.ST_PENDING;
+    static final int ST_SENT      = MessageDatabase.ST_SENT;
+    static final int ST_DELIVERED = MessageDatabase.ST_DELIVERED;
+    static final int ST_READ      = MessageDatabase.ST_READ;
 
     private String baseSignal;
-    private String baseBridge;
     private String myNumber;
     private String peerNumber;
     private String peerUuid;
     private String peerName;
 
     private SharedPreferences prefs;
+    private Repo repo;
     private boolean demoMode;
     private int demoIndex = -1;
-    private String chatDbKey;   // DB peer_key = digits(peerNumber) or peerUuid
-    private String lastTsKey;   // kept only for read_ts tracking (onResume)
+    private String chatDbKey;
 
     // Reply state
     private MessageItem replyToItem = null;
@@ -71,8 +68,6 @@ public class Chat extends AppCompatActivity {
     private ChatAdapter chatAdapter;
     private final List<MessageItem> rawItems     = new ArrayList<>(); // business logic, no headers
     private final List<MessageItem> displayItems = new ArrayList<>(); // adapter list, with date headers
-
-    private MessageDatabase msgDb;
 
     private android.widget.TextView debugLogView;
     private android.widget.ScrollView debugScrollView;
@@ -95,13 +90,50 @@ public class Chat extends AppCompatActivity {
     private final Runnable typingHideRun = () ->
             runOnUiThread(() -> { if (tvTyping != null) tvTyping.setVisibility(android.view.View.GONE); });
 
-    private OkHttpClient wsClient;
-    private WebSocket ws;
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private int retrySec = 1;
 
-    private static final long BRIDGE_POLL_MS = 3000L;
-    private boolean bridgePolling = false;
+    // Coalesced thread reload: listener events can burst during catch-up
+    private boolean reloadQueued = false;
+    private final Runnable reloadRun = new Runnable() {
+        @Override public void run() {
+            reloadQueued = false;
+            new Thread(() -> {
+                final List<MessageItem> fresh = repo.getThread(chatDbKey);
+                runOnUiThread(() -> {
+                    rawItems.clear();
+                    rawItems.addAll(fresh);
+                    rebuildDisplay();
+                    advanceReadWatermark();
+                });
+            }).start();
+        }
+    };
+
+    private final Repo.Listener repoListener = new Repo.Listener() {
+        @Override public void onItemInserted(String peerKey) {
+            if (chatDbKey.equals(peerKey)) scheduleReload();
+        }
+        @Override public void onItemChanged(String peerKey, long serverTs) {
+            if (chatDbKey.equals(peerKey)) scheduleReload();
+        }
+        @Override public void onEphemeral(String peerKey, String kind) {
+            if (!chatDbKey.equals(peerKey) || tvTyping == null) return;
+            handler.removeCallbacks(typingHideRun);
+            if ("typing_started".equals(kind)) {
+                tvTyping.setText(peerName + " is typing…");
+                tvTyping.setVisibility(android.view.View.VISIBLE);
+                handler.postDelayed(typingHideRun, TYPING_HIDE_MS);
+            } else {
+                tvTyping.setVisibility(android.view.View.GONE);
+            }
+        }
+    };
+
+    private void scheduleReload() {
+        if (reloadQueued) return;
+        reloadQueued = true;
+        handler.postDelayed(reloadRun, 150);
+    }
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -109,9 +141,9 @@ public class Chat extends AppCompatActivity {
         setTitle("");
 
         prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
+        repo  = Repo.get(this);
 
-        String ipPref     = prefs.getString("ip", "");
-        String bridgePref = prefs.getString("bridge", "");
+        String ipPref = prefs.getString("ip", "");
         myNumber   = prefs.getString("number", "");
         peerNumber = getIntent().getStringExtra("peer_number");
         peerUuid   = getIntent().getStringExtra("peer_uuid");
@@ -126,12 +158,7 @@ public class Chat extends AppCompatActivity {
         }
 
         baseSignal = normalizeBase(ipPref);
-        baseBridge = normalizeBase(bridgePref.isEmpty() ? deriveBridgeBase(ipPref) : bridgePref);
-
-        chatDbKey = notEmpty(peerNumber) ? digits(peerNumber) : (peerUuid != null ? peerUuid : "peer");
-        lastTsKey = "chat_last_ts_" + chatDbKey;
-
-        msgDb = new MessageDatabase(this);
+        chatDbKey = PeerKeys.get(this).resolve(peerNumber, peerUuid);
 
         // Debug log
         debugLogView    = findViewById(R.id.debug_log);
@@ -201,15 +228,18 @@ public class Chat extends AppCompatActivity {
         android.widget.ImageButton btnCancelReply = findViewById(R.id.btn_cancel_reply);
         chatAdapter.setOnLongPressListener(this::showMessageMenu);
         chatAdapter.setOnItemClickListener(pos -> {
-            if (!selectionMode) return;
             if (pos < 0 || pos >= displayItems.size()) return;
             MessageItem m = displayItems.get(pos);
-            if (m.type == MessageItem.TYPE_DATE_HEADER || m.serverTs == 0) return;
-            if (selectedTs.contains(m.serverTs)) selectedTs.remove(m.serverTs);
-            else selectedTs.add(m.serverTs);
-            if (selectedTs.isEmpty()) exitSelectionMode();
-            else updateSelectionBar();
-            chatAdapter.notifyDataSetChanged();
+            if (selectionMode) {
+                if (m.type == MessageItem.TYPE_DATE_HEADER || m.serverTs == 0) return;
+                if (selectedTs.contains(m.serverTs)) selectedTs.remove(m.serverTs);
+                else selectedTs.add(m.serverTs);
+                if (selectedTs.isEmpty()) exitSelectionMode();
+                else updateSelectionBar();
+                chatAdapter.notifyDataSetChanged();
+                return;
+            }
+            if (m.status == ST_FAILED && "me".equals(m.from)) retryFailedSend(m);
         });
 
         // Selection bar
@@ -249,61 +279,16 @@ public class Chat extends AppCompatActivity {
             String text = input.getText().toString().trim();
             if (text.isEmpty()) return;
 
-            long now = System.currentTimeMillis();
-            pushThreadHint(text, now);
-
             final MessageItem replyItem = replyToItem;
             final long        replyTs   = replyToTs;
             replyToItem = null;
             replyToTs   = 0;
             replyPreviewBar.setVisibility(android.view.View.GONE);
-
-            final String qt = replyItem == null ? null
-                    : (replyItem.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
-                       : (replyItem.text != null ? replyItem.text : ""));
-            final String qa = replyItem == null ? null : replyItem.from;
-
-            MessageItem pending = new MessageItem("me", text, ST_PENDING);
-            pending.serverTs = now;
-            pending.quoteText   = qt;
-            pending.quoteAuthor = qa;
-            rawItems.add(pending);
-            rebuildDisplay();
-
             input.setText("");
             handler.removeCallbacks(typingStopRun);
             if (typingSent) { typingSent = false; new Thread(this::sendTypingStop).start(); }
-            send.setEnabled(false);
-            new Thread(() -> {
-                msgDb.upsert(chatDbKey, "out", "text", text, null, null, null, null,
-                        now, ST_PENDING, qt, qa);
-                long signalTs = sendOnce(text, replyItem, replyTs);
-                runOnUiThread(() -> {
-                    send.setEnabled(true);
-                    if (signalTs > 0) {
-                        boolean noteToSelf = notEmpty(myNumber) && notEmpty(peerNumber)
-                                && digits(myNumber).equals(digits(peerNumber));
-                        int confirmedSt = noteToSelf ? ST_DELIVERED : ST_SENT;
-                        // Update pending item's serverTs to the real Signal timestamp
-                        for (int i = rawItems.size() - 1; i >= 0; i--) {
-                            MessageItem m = rawItems.get(i);
-                            if ("me".equals(m.from) && m.status == ST_PENDING && text.equals(m.text)) {
-                                m.serverTs = signalTs;
-                                m.status = confirmedSt;
-                                break;
-                            }
-                        }
-                        msgDb.confirmPending(chatDbKey, text, signalTs, confirmedSt);
-                        rebuildDisplay();
-                    } else {
-                        msgDb.deleteByServerTs(chatDbKey, now);
-                        for (int i = rawItems.size() - 1; i >= 0; i--)
-                            if (rawItems.get(i).serverTs == now) { rawItems.remove(i); break; }
-                        rebuildDisplay();
-                        Toast.makeText(Chat.this, "Send failed", Toast.LENGTH_SHORT).show();
-                    }
-                });
-            }).start();
+
+            sendText(text, replyItem, replyTs);
         });
 
         input.addTextChangedListener(new android.text.TextWatcher() {
@@ -325,13 +310,7 @@ public class Chat extends AppCompatActivity {
         });
 
         loadHistory();
-
         input.requestFocus();
-
-        wsClient = new OkHttpClient.Builder()
-                .readTimeout(0, TimeUnit.MILLISECONDS)
-                .pingInterval(25, TimeUnit.SECONDS)
-                .build();
     }
 
     @Override protected void onResume() {
@@ -343,35 +322,136 @@ public class Chat extends AppCompatActivity {
             debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
         }
         if (!demoMode) {
-            openWebSocket();
-            startBridgePolling();
-            fetchFromBridgeOnce();
+            repo.addListener(repoListener);
+            // service owns the socket; we just ask for a catch-up on open
+            new Thread(repo::catchUp, "chat-catchup").start();
+            scheduleReload();
         }
         if (!selectionMode) {
             EditText inputField = findViewById(R.id.input_message);
             inputField.requestFocus();
         }
-        String chatKey = chatDbKey;
         prefs.edit()
-                .putLong("read_ts_" + chatKey, System.currentTimeMillis())
-                .putString("last_read_peer", chatKey)
-                .putString("open_chat_peer", chatKey)
+                .putString("last_read_peer", chatDbKey)
+                .putString("open_chat_peer", chatDbKey)
                 .apply();
+        advanceReadWatermark();
     }
 
     @Override protected void onPause() {
         super.onPause();
         handler.removeCallbacks(typingStopRun);
         handler.removeCallbacks(typingHideRun);
+        handler.removeCallbacks(reloadRun);
+        reloadQueued = false;
         if (typingSent) { typingSent = false; new Thread(this::sendTypingStop).start(); }
-        closeWebSocket();
-        stopBridgePolling();
+        if (!demoMode) repo.removeListener(repoListener);
+        advanceReadWatermark();
         prefs.edit().remove("open_chat_peer").apply();
     }
 
     @Override protected void onDestroy() {
         super.onDestroy();
         DebugLog.unregister(debugListener);
+    }
+
+    /** Read watermark = max server_ts actually rendered (never the wall clock —
+     *  the Q10's clock drifts and wall-clock watermarks created phantom unread). */
+    private void advanceReadWatermark() {
+        long max = 0;
+        for (MessageItem m : rawItems)
+            if (m.serverTs > max) max = m.serverTs;
+        if (max > 0) repo.advanceReadTs(chatDbKey, max);
+    }
+
+    // -------------------- SEND --------------------
+
+    private void sendText(String text, MessageItem replyItem, long replyTs) {
+        final String qt = replyItem == null ? null
+                : (replyItem.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
+                   : (replyItem.text != null ? replyItem.text : ""));
+        final String qa = replyItem == null ? null : replyItem.from;
+
+        final long nonce = repo.beginSend(chatDbKey, "text", text, null, null, null,
+                replyTs, qt, qa);
+        if (nonce <= 0) { Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show(); return; }
+
+        new Thread(() -> {
+            String tsRaw = sendOnce(text, replyItem, replyTs);
+            if (tsRaw != null) {
+                repo.confirmSend(chatDbKey, nonce, tsRaw, "text", text, null, null,
+                        replyTs, qt, qa);
+            } else {
+                repo.failSend(chatDbKey, nonce);
+                runOnUiThread(() ->
+                        Toast.makeText(Chat.this, "Send failed — tap the message to retry", Toast.LENGTH_SHORT).show());
+            }
+        }).start();
+    }
+
+    private void retryFailedSend(MessageItem failed) {
+        final String text = failed.text;
+        final long oldKey = failed.serverTs; // -nonce
+        if (failed.type != MessageItem.TYPE_TEXT || isEmpty(text)) return;
+        new android.app.AlertDialog.Builder(this)
+                .setMessage("Resend this message?")
+                .setPositiveButton("Resend", (d, w) -> {
+                    repo.deleteLocal(chatDbKey, java.util.Collections.singletonList(oldKey));
+                    sendText(text, null, 0);
+                })
+                .setNegativeButton("Delete", (d, w) ->
+                        repo.deleteLocal(chatDbKey, java.util.Collections.singletonList(oldKey)))
+                .setNeutralButton("Cancel", null)
+                .show();
+    }
+
+    /** POST /v2/send; returns the raw timestamp string from the response
+     *  (string or number per M1 — never parsed here), or null on failure. */
+    private String sendOnce(String text, MessageItem replyTo, long replyTs) {
+        try {
+            String url = baseSignal + "/v2/send";
+            JSONObject body = new JSONObject();
+            body.put("message", text);
+            body.put("number", myNumber);
+            JSONArray rcpts = new JSONArray();
+            if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
+            body.put("recipients", rcpts);
+            if (replyTo != null && replyTs > 0) {
+                body.put("quote_timestamp", replyTs);
+                String qAuthor = "me".equals(replyTo.from) ? myNumber
+                        : (notEmpty(peerNumber) ? peerNumber : peerUuid);
+                body.put("quote_author", qAuthor == null ? "" : qAuthor);
+                String qText = replyTo.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
+                        : (replyTo.text != null ? replyTo.text : "");
+                body.put("quote_message", qText);
+            }
+            return postForTimestamp(url, body.toString(), 8000);
+        } catch (Exception e) { return null; }
+    }
+
+    /** Shared POST helper: returns raw "timestamp" field as string, or null. */
+    private static String postForTimestamp(String url, String json, int timeoutMs) {
+        try {
+            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            c.setConnectTimeout(8000); c.setReadTimeout(timeoutMs);
+            c.setRequestMethod("POST");
+            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            c.setDoOutput(true);
+            try (java.io.OutputStream os = new java.io.BufferedOutputStream(c.getOutputStream())) {
+                os.write(json.getBytes("UTF-8"));
+            }
+            int code = c.getResponseCode();
+            if (code < 200 || code >= 300) { c.disconnect(); return null; }
+            String tsRaw;
+            try (java.io.InputStream is = c.getInputStream();
+                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
+                byte[] buf = new byte[1024]; int n;
+                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
+                tsRaw = new JSONObject(bos.toString("UTF-8")).optString("timestamp", "");
+            }
+            c.disconnect();
+            return tsRaw.isEmpty() ? null : tsRaw;
+        } catch (Exception e) { return null; }
     }
 
     // -------------------- ATTACHMENT PICK --------------------
@@ -386,11 +466,17 @@ public class Chat extends AppCompatActivity {
         final String caption = input.getText().toString().trim();
         input.setText("");
 
+        String mimeRaw = getContentResolver().getType(uri);
+        final String mime = (mimeRaw != null) ? mimeRaw : "application/octet-stream";
+        final String kind = Repo.kindFromMime(mime);
+        final String cap  = caption.isEmpty() ? null : caption;
+        final String uriStr = uri.toString();
+
+        final long nonce = repo.beginSend(chatDbKey, kind, null, mime, cap, uriStr, 0, null, null);
+        if (nonce <= 0) { Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show(); return; }
+
         new Thread(() -> {
             try {
-                String mimeRaw = getContentResolver().getType(uri);
-                final String mime = (mimeRaw != null) ? mimeRaw : "application/octet-stream";
-
                 byte[] bytes;
                 try (InputStream is = getContentResolver().openInputStream(uri);
                      ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
@@ -401,31 +487,25 @@ public class Chat extends AppCompatActivity {
                 }
 
                 String b64 = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
-                boolean ok = sendAttachment(b64, caption);
-
-                final String uriStr = uri.toString();
-                final long   now    = System.currentTimeMillis();
-                runOnUiThread(() -> {
-                    if (ok) {
-                        String cap = caption.isEmpty() ? null : caption;
-                        MessageItem img = new MessageItem("me", uriStr, cap, ST_SENT, true);
-                        img.serverTs = now;
-                        rawItems.add(img);
-                        rebuildDisplay();
-                        // write image to DB immediately (bridge doesn't store images)
-                        msgDb.upsert(chatDbKey, "out", "image",
-                                null, null, mime, cap, uriStr, now, ST_SENT, null, null);
-                    } else {
-                        Toast.makeText(this, "Failed to send attachment", Toast.LENGTH_SHORT).show();
-                    }
-                });
+                String tsRaw = sendAttachment(b64, caption);
+                if (tsRaw != null) {
+                    repo.confirmSend(chatDbKey, nonce, tsRaw, kind, caption, null, mime, 0, null, null);
+                } else {
+                    repo.failSend(chatDbKey, nonce);
+                    runOnUiThread(() ->
+                            Toast.makeText(this, "Failed to send attachment", Toast.LENGTH_SHORT).show());
+                }
             } catch (Exception e) {
+                repo.failSend(chatDbKey, nonce);
                 runOnUiThread(() -> Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show());
             }
         }).start();
     }
 
-    private boolean sendAttachment(String base64Data, String caption) {
+    /** Returns the raw response timestamp string, or null on failure.
+     *  Media sends use a long read timeout: signal-cli decodes + dispatches the
+     *  whole upload before responding (8s made timeout-but-sent the COMMON case). */
+    private String sendAttachment(String base64Data, String caption) {
         try {
             String url = baseSignal + "/v2/send";
             JSONObject body = new JSONObject();
@@ -437,9 +517,8 @@ public class Chat extends AppCompatActivity {
             JSONArray atts = new JSONArray();
             atts.put(base64Data);
             body.put("base64_attachments", atts);
-            int code = httpPostJson(url, body.toString());
-            return code >= 200 && code < 300;
-        } catch (Exception e) { return false; }
+            return postForTimestamp(url, body.toString(), 120_000);
+        } catch (Exception e) { return null; }
     }
 
     // -------------------- TYPING INDICATORS --------------------
@@ -463,434 +542,13 @@ public class Chat extends AppCompatActivity {
         } catch (Exception ignored) {}
     }
 
-    // -------------------- SEND --------------------
-    // Returns the Signal timestamp from the response, or 0 on failure.
-    private long sendOnce(String text, MessageItem replyTo, long replyTs) {
-        try {
-            String url = baseSignal + "/v2/send";
-            JSONObject body = new JSONObject();
-            body.put("message", text);
-            body.put("number", myNumber);
-            JSONArray rcpts = new JSONArray();
-            if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
-            body.put("recipients", rcpts);
-            if (replyTo != null && replyTs > 0) {
-                body.put("quote_timestamp", replyTs);
-                String qAuthor = "me".equals(replyTo.from) ? myNumber
-                        : (notEmpty(peerNumber) ? peerNumber : peerUuid);
-                body.put("quote_author", qAuthor == null ? "" : qAuthor);
-                String qText = replyTo.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
-                        : (replyTo.text != null ? replyTo.text : "");
-                body.put("quote_message", qText);
-            }
-            java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-            c.setConnectTimeout(8000); c.setReadTimeout(8000);
-            c.setRequestMethod("POST");
-            c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-            c.setDoOutput(true);
-            try (java.io.OutputStream os = new java.io.BufferedOutputStream(c.getOutputStream())) {
-                os.write(body.toString().getBytes("UTF-8"));
-            }
-            int code = c.getResponseCode();
-            if (code < 200 || code >= 300) { c.disconnect(); return 0; }
-            long signalTs = 0;
-            try (java.io.InputStream is = c.getInputStream();
-                 java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
-                byte[] buf = new byte[1024]; int n;
-                while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
-                signalTs = new JSONObject(bos.toString("UTF-8")).optLong("timestamp", 0);
-            }
-            c.disconnect();
-            return signalTs > 0 ? signalTs : 1;
-        } catch (Exception e) { return 0; }
-    }
-
-    // -------------------- SIGNAL WS --------------------
-    private void openWebSocket() {
-        if (ws != null) return;
-        try {
-            String wsUrl = toWs(baseSignal) + "/v1/receive/" + URLEncoder.encode(myNumber, "UTF-8");
-            Request req = new Request.Builder().url(wsUrl).build();
-            ws = wsClient.newWebSocket(req, new WebSocketListener() {
-                @Override public void onOpen(WebSocket s, Response r) { retrySec = 1; dbg("WS-OPEN"); }
-                @Override public void onMessage(WebSocket s, String text) { handleWsPayload(text); }
-                @Override public void onMessage(WebSocket s, ByteString b)  { handleWsPayload(b.utf8()); }
-                @Override public void onClosed(WebSocket s, int c, String r) { ws = null; dbg("WS-CLOSED code=" + c); scheduleReconnect(); }
-                @Override public void onFailure(WebSocket s, Throwable t, Response r) { ws = null; dbg("WS-FAIL " + (t != null ? t.getMessage() : "null")); scheduleReconnect(); }
-            });
-        } catch (Exception e) { scheduleReconnect(); }
-    }
-    private void scheduleReconnect() {
-        if (isFinishing() || isDestroyed()) return;
-        final int d = Math.min(retrySec, 16);
-        retrySec = Math.min(retrySec * 2, 16);
-        handler.postDelayed(this::openWebSocket, d * 1000L);
-    }
-    private void closeWebSocket() {
-        if (ws != null) { try { ws.close(1000, "bye"); } catch (Exception ignored) {} ws = null; }
-        retrySec = 1;
-    }
-
-    private void handleWsPayload(String payload) {
-        dbg("WS: " + payload.substring(0, Math.min(120, payload.length())));
-        boolean changed = false;
-        try {
-            String p = payload.trim();
-            if (p.startsWith("[")) {
-                JSONArray arr = new JSONArray(p);
-                for (int i = 0; i < arr.length(); i++)
-                    if (handleEnvelope(arr.getJSONObject(i))) changed = true;
-            } else {
-                if (handleEnvelope(new JSONObject(p))) changed = true;
-            }
-        } catch (Exception ignored) {}
-        if (changed) runOnUiThread(this::rebuildDisplay);
-    }
-
-    private boolean handleEnvelope(JSONObject obj) {
-        boolean changed = false;
-        JSONObject env = obj.optJSONObject("envelope");
-        if (env == null) return false;
-
-        String srcNum  = env.optString("sourceNumber", env.optString("source", ""));
-        String srcUuid = env.optString("sourceUuid", "");
-
-        if (isFromPeer(srcNum, srcUuid)) {
-            JSONObject data = env.optJSONObject("dataMessage");
-            if (data != null) {
-                long ts = env.optLong("timestamp", 0);
-
-                JSONObject rd = data.optJSONObject("remoteDelete");
-                if (rd != null) {
-                    long targetTs = rd.optLong("timestamp", 0);
-                    if (targetTs > 0) deleteMessage(targetTs);
-                    return true;
-                }
-
-                JSONObject rxn = data.optJSONObject("reaction");
-                if (rxn != null) {
-                    String emoji    = rxn.optString("emoji", "");
-                    long   targetTs = rxn.optLong("targetSentTimestamp", 0);
-                    boolean remove  = rxn.optBoolean("isRemove", false);
-                    dbg("RXN-IN peer emoji=" + emoji + " targetTs=" + targetTs + " remove=" + remove);
-                    if (!emoji.isEmpty() && targetTs > 0) applyReaction("peer", emoji, remove, targetTs);
-                    return true;
-                }
-
-                String rawMsg = data.isNull("message") ? "" : data.optString("message", "");
-                String rawTxt = data.isNull("text")    ? "" : data.optString("text", "");
-                String text = (rawMsg.isEmpty() ? rawTxt : rawMsg).trim();
-                JSONArray atts = data.optJSONArray("attachments");
-                boolean hasImage = atts != null && atts.length() > 0;
-
-                String quoteText = null, quoteAuthor = null;
-                JSONObject quote = data.optJSONObject("quote");
-                if (quote != null) {
-                    quoteText = quote.optString("text", "");
-                    String qNum = quote.optString("authorNumber", quote.optString("author", ""));
-                    boolean qFromMe = notEmpty(myNumber) && digits(qNum).equals(digits(myNumber));
-                    quoteAuthor = qFromMe ? "me" : "peer";
-                    if (quoteText.isEmpty()) quoteText = "📷 Photo";
-                }
-
-                if (!isEmpty(text) && !hasImage) {
-                    MessageItem item = new MessageItem("peer", text, ST_DELIVERED);
-                    item.serverTs    = ts;
-                    item.quoteText   = quoteText;
-                    item.quoteAuthor = quoteAuthor;
-                    rawItems.add(item);
-                    msgDb.upsert(chatDbKey, "in", "text", text, null, null, null, null,
-                            ts, ST_DELIVERED, quoteText, quoteAuthor);
-                    changed = true;
-                    bumpLastTs(ts);
-                }
-
-                if (hasImage) {
-                    for (int i = 0; i < atts.length(); i++) {
-                        JSONObject a = atts.optJSONObject(i);
-                        if (a == null) continue;
-                        String cid  = a.optString("id", "");
-                        String mime = a.optString("contentType", "");
-                        if (!isEmpty(cid) && mime != null && mime.startsWith("image/")) {
-                            MessageItem item = new MessageItem("peer", cid, mime,
-                                    isEmpty(text) ? null : text, ST_DELIVERED);
-                            item.serverTs    = ts;
-                            item.quoteText   = quoteText;
-                            item.quoteAuthor = quoteAuthor;
-                            rawItems.add(item);
-                            msgDb.upsert(chatDbKey, "in", "image", null, cid, mime,
-                                    isEmpty(text) ? null : text, null,
-                                    ts, ST_DELIVERED, quoteText, quoteAuthor);
-                            changed = true;
-                            bumpLastTs(ts);
-                        }
-                    }
-                }
-            }
-        }
-
-        JSONObject sync = env.optJSONObject("syncMessage");
-        if (sync != null) {
-            JSONObject sent = sync.optJSONObject("sentMessage");
-            if (sent != null) {
-                String destNum  = sent.optString("destinationNumber", "");
-                String destUuid = sent.optString("destinationUuid", "");
-                if (isDestThisChat(destNum, destUuid)) {
-                    JSONObject rdSync = sent.optJSONObject("remoteDelete");
-                    if (rdSync != null) {
-                        long targetTs = rdSync.optLong("timestamp", 0);
-                        if (targetTs > 0) deleteMessage(targetTs);
-                        return true;
-                    }
-
-                    JSONObject rxnSync = sent.optJSONObject("reaction");
-                    if (rxnSync != null) {
-                        String emoji    = rxnSync.optString("emoji", "");
-                        long   targetTs = rxnSync.optLong("targetSentTimestamp", 0);
-                        boolean remove  = rxnSync.optBoolean("isRemove", false);
-                        dbg("RXN-SYNC me emoji=" + emoji + " targetTs=" + targetTs + " remove=" + remove);
-                        if (!emoji.isEmpty() && targetTs > 0) applyReaction("me", emoji, remove, targetTs);
-                        return true;
-                    }
-
-                    String msg = (sent.isNull("message") ? "" : sent.optString("message", "")).trim();
-                    long   ts  = sent.optLong("timestamp", 0);
-                    dbg("SYNC-SENT msg=" + msg + " ts=" + ts);
-                    if (!isEmpty(msg)) {
-                        boolean matched = false;
-                        for (int i = rawItems.size() - 1; i >= 0; i--) {
-                            MessageItem m = rawItems.get(i);
-                            if ("me".equals(m.from) && m.status == ST_PENDING && msg.equals(m.text)) {
-                                m.status = ST_SENT;
-                                m.serverTs = ts;
-                                matched = true;
-                                break;
-                            }
-                        }
-                        dbg("SYNC-SENT matched=" + matched + " ts=" + ts);
-                        if (matched) {
-                            msgDb.confirmPending(chatDbKey, msg, ts, ST_SENT);
-                        } else {
-                            boolean alreadyPresent = false;
-                            long prevTs = 0;
-                            for (int i = rawItems.size() - 1; i >= 0; i--) {
-                                MessageItem m = rawItems.get(i);
-                                if ("me".equals(m.from) && msg.equals(m.text)) {
-                                    prevTs = m.serverTs;
-                                    m.serverTs = ts;
-                                    alreadyPresent = true;
-                                    break;
-                                }
-                            }
-                            if (alreadyPresent) {
-                                // Already confirmed via HTTP — just correct the ts in DB, don't insert
-                                if (prevTs > 0 && prevTs != ts) msgDb.updateServerTs(chatDbKey, prevTs, ts);
-                            } else {
-                                // Sent from another device
-                                MessageItem item = new MessageItem("me", msg, ST_SENT);
-                                item.serverTs = ts;
-                                rawItems.add(item);
-                                msgDb.upsert(chatDbKey, "out", "text", msg, null, null, null, null,
-                                        ts, ST_SENT, null, null);
-                            }
-                        }
-                        changed = true;
-                    }
-                    JSONArray atts = sent.optJSONArray("attachments");
-                    if (atts != null) {
-                        for (int i = 0; i < atts.length(); i++) {
-                            JSONObject a = atts.optJSONObject(i);
-                            if (a == null) continue;
-                            String cid  = a.optString("id", "");
-                            String mime = a.optString("contentType", "");
-                            if (!isEmpty(cid) && mime != null && mime.startsWith("image/")) {
-                                MessageItem item = new MessageItem("me", cid, mime, null, ST_SENT);
-                                item.serverTs = ts;
-                                rawItems.add(item);
-                                msgDb.upsert(chatDbKey, "out", "image", null, cid, mime,
-                                        null, null, ts, ST_SENT, null, null);
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Incoming edit from peer or sync echo of own edit from another device
-        long editEnvelopeTs = env.optLong("timestamp", 0);
-        JSONObject editMsg = env.optJSONObject("editMessage");
-        if (editMsg == null && sync != null) {
-            JSONObject sentMsg = sync.optJSONObject("sentMessage");
-            if (sentMsg != null) {
-                editMsg = sentMsg.optJSONObject("editMessage");
-                if (editMsg != null && editEnvelopeTs == 0)
-                    editEnvelopeTs = sentMsg.optLong("timestamp", 0);
-            }
-        }
-        if (editMsg != null) {
-            dbg("EDIT-IN " + editMsg.toString().substring(0, Math.min(200, editMsg.toString().length())));
-            long targetTs = editMsg.optLong("targetSentTimestamp", 0);
-            JSONObject editData = editMsg.optJSONObject("dataMessage");
-            String newText = editData != null ? editData.optString("message", "").trim() : "";
-            dbg("EDIT-IN targetTs=" + targetTs + " editEnvelopeTs=" + editEnvelopeTs + " newText=" + newText);
-            if (targetTs > 0 && !isEmpty(newText)) {
-                msgDb.applyEdit(chatDbKey, targetTs, newText, editEnvelopeTs);
-                boolean found = false;
-                for (MessageItem it : rawItems) {
-                    if (it.serverTs == targetTs || (it.lastEditTs != 0 && it.lastEditTs == targetTs)) {
-                        it.editHistory = it.editHistory == null
-                                ? "[\"" + (it.text == null ? "" : it.text.replace("\"", "\\\"")) + "\"]"
-                                : appendToHistoryJson(it.editHistory, it.text == null ? "" : it.text);
-                        it.text = newText;
-                        it.lastEditTs = editEnvelopeTs;
-                        found = true;
-                        break;
-                    }
-                }
-                dbg("EDIT-IN found=" + found + " rawItemsTsDump=" + rawItemsTsDump());
-                changed = true;
-            }
-        }
-
-        if (isFromPeer(srcNum, srcUuid)) {
-            JSONObject typing = env.optJSONObject("typingMessage");
-            if (typing != null) {
-                String action = typing.optString("action", "");
-                runOnUiThread(() -> {
-                    handler.removeCallbacks(typingHideRun);
-                    if ("STARTED".equals(action)) {
-                        tvTyping.setText(peerName + " is typing…");
-                        tvTyping.setVisibility(android.view.View.VISIBLE);
-                        handler.postDelayed(typingHideRun, TYPING_HIDE_MS);
-                    } else {
-                        tvTyping.setVisibility(android.view.View.GONE);
-                    }
-                });
-                return false;
-            }
-        }
-
-        JSONObject receipt = env.optJSONObject("receiptMessage");
-        if (receipt != null) {
-            dbg("RECEIPT json=" + receipt);
-            if (receipt.optBoolean("isDelivery", false)) {
-                // Delivery receipt contains the real Signal timestamps — correct any off-by-~300ms serverTs
-                JSONArray recTs = receipt.optJSONArray("timestamps");
-                if (recTs != null) {
-                    for (int i = 0; i < recTs.length(); i++) {
-                        long confirmedTs = recTs.optLong(i, 0);
-                        if (confirmedTs <= 0) continue;
-                        for (int j = rawItems.size() - 1; j >= 0; j--) {
-                            MessageItem m = rawItems.get(j);
-                            if (!"me".equals(m.from)) continue;
-                            long diff = Math.abs(m.serverTs - confirmedTs);
-                            if (diff > 0 && diff < 2000) {
-                                long oldTs = m.serverTs;
-                                m.serverTs = confirmedTs;
-                                msgDb.updateServerTs(chatDbKey, oldTs, confirmedTs);
-                                dbg("RECEIPT corrected ts " + oldTs + " -> " + confirmedTs);
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (upgradeNewestMyStatusToAtLeast(ST_DELIVERED)) {
-                    msgDb.upgradeAllOutStatus(chatDbKey, ST_DELIVERED);
-                    changed = true;
-                }
-            } else if (receipt.optBoolean("isRead", false) || receipt.optBoolean("isViewed", false)) {
-                if (upgradeNewestMyStatusToAtLeast(ST_READ)) {
-                    msgDb.upgradeAllOutStatus(chatDbKey, ST_READ);
-                    changed = true;
-                }
-            }
-        }
-        return changed;
-    }
-
-    // -------------------- BRIDGE POLLING --------------------
-    private void startBridgePolling() {
-        if (bridgePolling) return;
-        bridgePolling = true;
-        handler.post(bridgePollRun);
-    }
-    private void stopBridgePolling() {
-        bridgePolling = false;
-        handler.removeCallbacks(bridgePollRun);
-    }
-    private final Runnable bridgePollRun = new Runnable() {
-        @Override public void run() {
-            if (!bridgePolling) return;
-            fetchFromBridgeOnce();
-            handler.postDelayed(this, BRIDGE_POLL_MS);
-        }
-    };
-
-    private void fetchFromBridgeOnce() {
-        new Thread(() -> {
-            try {
-                String peer  = notEmpty(peerNumber) ? peerNumber : peerUuid;
-                long   after = msgDb.getLastTs(chatDbKey);
-                String url   = baseBridge + "/messages?peer=" +
-                        URLEncoder.encode(peer, "UTF-8") + "&after=" + after + "&limit=500";
-                String json  = httpGet(url);
-                JSONObject root = new JSONObject(json);
-                JSONArray arr   = root.optJSONArray("items");
-                if (arr == null) return;
-
-                boolean anyNew = false;
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject it  = arr.getJSONObject(i);
-                    String dir     = it.optString("dir", "");
-                    String text    = it.optString("text", "");
-                    String attId   = it.optString("attId", "");
-                    String mime    = it.optString("mime", "");
-                    long   ts      = it.optLong("serverTs", 0);
-                    int    st      = it.optInt("status", ST_SENT);
-
-                    if (isEmpty(dir)) continue;
-
-                    int finalSt = "in".equals(dir) ? Math.max(st, ST_DELIVERED) : st;
-                    long id;
-                    if (!isEmpty(attId)) {
-                        id = msgDb.upsert(chatDbKey, dir, "image", null, attId, mime,
-                                null, null, ts, finalSt, null, null);
-                    } else if (!isEmpty(text)) {
-                        if ("out".equals(dir)) {
-                            // Use confirmPending so the pending row (server_ts=local) gets
-                            // updated in place rather than creating a duplicate row.
-                            msgDb.confirmPending(chatDbKey, text, ts, finalSt);
-                            id = 1;
-                        } else {
-                            id = msgDb.upsert(chatDbKey, dir, "text", text, null, null, null, null,
-                                    ts, finalSt, null, null);
-                            if (id <= 0 && ts > 0) backfillServerTs("peer", text, ts);
-                        }
-                    } else {
-                        continue;
-                    }
-                    if (id > 0) anyNew = true;
-                }
-
-                if (anyNew) {
-                    List<MessageItem> fresh = msgDb.getMessages(chatDbKey);
-                    runOnUiThread(() -> {
-                        rawItems.clear();
-                        rawItems.addAll(fresh);
-                        rebuildDisplay();
-                    });
-                }
-            } catch (Exception ignored) {}
-        }).start();
-    }
-
     // -------------------- display rebuild (inserts date headers) --------------------
     private void rebuildDisplay() {
         displayItems.clear();
         String lastDayKey = null;
         for (MessageItem m : rawItems) {
-            long ts = m.serverTs > 0 ? m.serverTs : System.currentTimeMillis();
+            long ts = m.serverTs > 0 ? m.serverTs : m.displayTs();
+            if (ts <= 0) ts = System.currentTimeMillis();
             String dk = dayKey(ts);
             if (!dk.equals(lastDayKey)) {
                 displayItems.add(new MessageItem(dateLabel(ts), true));
@@ -930,19 +588,7 @@ public class Chat extends AppCompatActivity {
                 && a.get(java.util.Calendar.DAY_OF_YEAR) == b.get(java.util.Calendar.DAY_OF_YEAR);
     }
 
-    // -------------------- helpers --------------------
-    private void deleteMessage(long targetTs) {
-        msgDb.deleteByServerTs(chatDbKey, targetTs);
-        for (int i = rawItems.size() - 1; i >= 0; i--) {
-            if (rawItems.get(i).serverTs == targetTs) {
-                rawItems.remove(i);
-                break;
-            }
-        }
-        runOnUiThread(this::rebuildDisplay);
-    }
-
-    private static void dbg(String msg) { DebugLog.log(msg); }
+    // -------------------- message menu / actions --------------------
 
     private void showMessageMenu(int displayPos) {
         if (displayPos < 0 || displayPos >= displayItems.size()) return;
@@ -950,7 +596,6 @@ public class Chat extends AppCompatActivity {
         if (m.type == MessageItem.TYPE_DATE_HEADER || m.serverTs == 0) return;
 
         if (selectionMode) {
-            // In selection mode, long press just toggles
             if (selectedTs.contains(m.serverTs)) selectedTs.remove(m.serverTs);
             else selectedTs.add(m.serverTs);
             if (selectedTs.isEmpty()) exitSelectionMode();
@@ -1020,7 +665,6 @@ public class Chat extends AppCompatActivity {
                 .setNeutralButton("Reply", (d, w) -> doReply(displayPos))
                 .setNegativeButton("Select", (d, w) -> enterSelectionMode(m.serverTs))
                 .show();
-        // Tint delete button red after show
         ref[0].getButton(android.app.AlertDialog.BUTTON_POSITIVE)
                 .setTextColor(0xFFD32F2F);
     }
@@ -1060,69 +704,26 @@ public class Chat extends AppCompatActivity {
         new Thread(() -> {
             try {
                 String url = baseSignal + "/v2/send";
-                org.json.JSONObject body = new org.json.JSONObject();
+                JSONObject body = new JSONObject();
                 body.put("message", newText);
                 body.put("number", myNumber);
-                org.json.JSONArray rcpts = new org.json.JSONArray();
+                JSONArray rcpts = new JSONArray();
                 if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
                 body.put("recipients", rcpts);
                 long editTs = original.lastEditTs > 0 ? original.lastEditTs : original.serverTs;
                 body.put("edit_timestamp", editTs);
-                dbg("EDIT-SEND editTs=" + editTs + " newText=" + newText);
-                // Read response body to capture the new edit timestamp
-                long newEditTs = 0;
-                int code;
-                try {
-                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-                    c.setConnectTimeout(8000);
-                    c.setReadTimeout(8000);
-                    c.setRequestMethod("POST");
-                    c.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                    c.setDoOutput(true);
-                    try (java.io.OutputStream os = new java.io.BufferedOutputStream(c.getOutputStream())) {
-                        os.write(body.toString().getBytes("UTF-8"));
-                    }
-                    code = c.getResponseCode();
-                    if (code >= 200 && code < 300) {
-                        try (java.io.InputStream is = c.getInputStream();
-                             java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
-                            byte[] buf = new byte[1024]; int n;
-                            while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
-                            org.json.JSONObject resp = new org.json.JSONObject(bos.toString("UTF-8"));
-                            newEditTs = resp.optLong("timestamp", 0);
-                        }
-                    }
-                    c.disconnect();
-                } catch (Exception e) { code = 0; }
-                final boolean ok = code >= 200 && code < 300;
-                final long capturedEditTs = newEditTs;
-                dbg("EDIT-SEND code=" + code + " ok=" + ok + " newEditTs=" + capturedEditTs);
+                String tsRaw = postForTimestamp(url, body.toString(), 8000);
+                final long newEditTs = tsRaw == null ? 0 : parseLongSafe(tsRaw);
+                final long prevTs = editTs;
                 runOnUiThread(() -> {
-                    if (ok) {
-                        applyEditLocally(original, newText, capturedEditTs);
+                    if (tsRaw != null) {
+                        repo.applyLocalEdit(chatDbKey, prevTs, newText, newEditTs);
                     } else {
                         Toast.makeText(Chat.this, "Edit failed", Toast.LENGTH_SHORT).show();
                     }
                 });
             } catch (Exception ignored) {}
         }).start();
-    }
-
-    private void applyEditLocally(MessageItem m, String newText, long newEditTs) {
-        msgDb.applyEdit(chatDbKey, m.lastEditTs > 0 ? m.lastEditTs : m.serverTs, newText, newEditTs);
-        m.editHistory = m.editHistory == null ? "[\"" + (m.text == null ? "" : m.text.replace("\"", "\\\"")) + "\"]"
-                : appendToHistoryJson(m.editHistory, m.text == null ? "" : m.text);
-        m.text = newText;
-        m.lastEditTs = newEditTs;
-        rebuildDisplay();
-    }
-
-    private static String appendToHistoryJson(String histJson, String entry) {
-        try {
-            org.json.JSONArray arr = new org.json.JSONArray(histJson);
-            arr.put(entry);
-            return arr.toString();
-        } catch (Exception e) { return histJson; }
     }
 
     private void enterSelectionMode(long firstTs) {
@@ -1150,12 +751,8 @@ public class Chat extends AppCompatActivity {
     private void confirmDeleteSingle(long ts) {
         new android.app.AlertDialog.Builder(this)
                 .setMessage("Delete this message?")
-                .setPositiveButton("Delete", (d, w) -> {
-                    msgDb.deleteMessages(chatDbKey, java.util.Collections.singletonList(ts));
-                    for (int i = rawItems.size() - 1; i >= 0; i--)
-                        if (rawItems.get(i).serverTs == ts) { rawItems.remove(i); break; }
-                    rebuildDisplay();
-                })
+                .setPositiveButton("Delete", (d, w) ->
+                        repo.deleteLocal(chatDbKey, java.util.Collections.singletonList(ts)))
                 .setNegativeButton("Cancel", null)
                 .show();
     }
@@ -1165,11 +762,8 @@ public class Chat extends AppCompatActivity {
         new android.app.AlertDialog.Builder(this)
                 .setMessage("Delete " + count + " message" + (count == 1 ? "" : "s") + "?")
                 .setPositiveButton("Delete", (d, w) -> {
-                    msgDb.deleteMessages(chatDbKey, new ArrayList<>(selectedTs));
-                    for (int i = rawItems.size() - 1; i >= 0; i--)
-                        if (selectedTs.contains(rawItems.get(i).serverTs)) rawItems.remove(i);
+                    repo.deleteLocal(chatDbKey, new ArrayList<>(selectedTs));
                     exitSelectionMode();
-                    rebuildDisplay();
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -1189,10 +783,7 @@ public class Chat extends AppCompatActivity {
     }
 
     private void sendReaction(String emoji, MessageItem target, boolean isRemove) {
-        runOnUiThread(() -> {
-            applyReaction("me", emoji, isRemove, target.serverTs);
-            rebuildDisplay();
-        });
+        repo.sendLocalReaction(chatDbKey, target.serverTs, emoji, isRemove);
         new Thread(() -> {
             try {
                 String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
@@ -1204,98 +795,16 @@ public class Chat extends AppCompatActivity {
                 body.put("target_author", targetAuthor);
                 body.put("timestamp", target.serverTs);
                 String url = baseSignal + "/v1/reactions/" + URLEncoder.encode(myNumber, "UTF-8");
-                dbg("SEND-RXN emoji=" + emoji + " ts=" + target.serverTs + " remove=" + isRemove + " url=" + url);
                 int code = isRemove ? httpDeleteJson(url, body.toString())
                                    : httpPostJson(url, body.toString());
-                dbg("SEND-RXN resp=" + code + " body=" + body);
+                if (code < 200 || code >= 300)
+                    runOnUiThread(() ->
+                            Toast.makeText(Chat.this, "Reaction failed", Toast.LENGTH_SHORT).show());
             } catch (Exception ignored) {}
         }).start();
     }
 
-    private void applyReaction(String authorKey, String emoji, boolean isRemove, long targetTs) {
-        msgDb.updateReaction(chatDbKey, targetTs, authorKey, emoji, isRemove);
-        boolean found = false;
-        for (MessageItem m : rawItems) {
-            if (m.serverTs == targetTs) {
-                if (m.reactions == null) m.reactions = new java.util.HashMap<>();
-                if (isRemove) m.reactions.remove(authorKey);
-                else m.reactions.put(authorKey, emoji);
-                found = true;
-                break;
-            }
-        }
-        dbg("applyReaction author=" + authorKey + " emoji=" + emoji + " targetTs=" + targetTs + " found=" + found);
-        if (!found) {
-            dbg("  rawItems ts dump: " + rawItemsTsDump());
-            // Target not in rawItems (may be from a prior session) — reload so DB reactions show
-            new Thread(() -> {
-                List<MessageItem> fresh = msgDb.getMessages(chatDbKey);
-                runOnUiThread(() -> {
-                    rawItems.clear();
-                    rawItems.addAll(fresh);
-                    rebuildDisplay();
-                });
-            }).start();
-        }
-    }
-
-    private String rawItemsTsDump() {
-        StringBuilder sb = new StringBuilder();
-        for (MessageItem m : rawItems) sb.append(m.from).append(":").append(m.serverTs).append(" ");
-        return sb.length() > 200 ? sb.substring(sb.length() - 200) : sb.toString();
-    }
-
-    private void bumpLastTs(long ts) {
-        // no-op: DB getLastTs() is now the source of truth
-    }
-
-    private boolean markNewestMyPendingTo(int newStatus) {
-        for (int i = rawItems.size() - 1; i >= 0; i--) {
-            MessageItem m = rawItems.get(i);
-            if ("me".equals(m.from) && m.status == ST_PENDING) {
-                m.status = newStatus;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void markNewestPendingWithTextTo(String text, int newStatus) {
-        if (isEmpty(text)) return;
-        for (int i = rawItems.size() - 1; i >= 0; i--) {
-            MessageItem m = rawItems.get(i);
-            if ("me".equals(m.from) && m.status == ST_PENDING && text.equals(m.text)) {
-                m.status = newStatus;
-                return;
-            }
-        }
-    }
-
-    private boolean upgradeNewestMyStatusToAtLeast(int newStatus) {
-        for (int i = rawItems.size() - 1; i >= 0; i--) {
-            MessageItem m = rawItems.get(i);
-            if ("me".equals(m.from) && m.status < newStatus) {
-                m.status = newStatus;
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void backfillServerTs(String from, String text, long ts) {
-        if (isEmpty(text) || ts <= 0) return;
-        int limit = "peer".equals(from) ? Math.max(0, rawItems.size() - 50) : 0;
-        for (int i = rawItems.size() - 1; i >= limit; i--) {
-            MessageItem m = rawItems.get(i);
-            if (from.equals(m.from) && m.type == MessageItem.TYPE_TEXT
-                    && text.equals(m.text) && m.serverTs == 0) {
-                m.serverTs = ts;
-                return;
-            }
-        }
-    }
-
-    // -------------------- persistence --------------------
+    // -------------------- history --------------------
     private void loadHistory() {
         if (demoMode) {
             rawItems.clear();
@@ -1303,8 +812,7 @@ public class Chat extends AppCompatActivity {
             rebuildDisplay();
             return;
         }
-        // Load from DB
-        List<MessageItem> stored = msgDb.getMessages(chatDbKey);
+        List<MessageItem> stored = repo.getThread(chatDbKey);
         if (!stored.isEmpty()) {
             rawItems.clear();
             rawItems.addAll(stored);
@@ -1312,13 +820,12 @@ public class Chat extends AppCompatActivity {
             return;
         }
 
-        // DB empty — migrate from old SharedPreferences JSON
+        // DB empty — migrate from old SharedPreferences JSON (pre-DB builds)
         String histKey = "chat_hist_" + chatDbKey;
         try {
             String raw = prefs.getString(histKey, "[]");
             JSONArray arr = new JSONArray(raw);
             if (arr.length() == 0) return;
-            rawItems.clear();
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject o   = arr.getJSONObject(i);
                 String from    = o.optString("from", "peer");
@@ -1328,60 +835,26 @@ public class Chat extends AppCompatActivity {
                 String qt      = o.optString("quoteText", "");
                 String qa      = o.optString("quoteAuthor", "peer");
                 String dir     = "me".equals(from) ? "out" : "in";
-                MessageItem item;
                 if ("image".equals(type)) {
                     String cid     = o.optString("attId", "");
                     String mime    = o.optString("mime", "");
                     String caption = o.optString("caption", "");
                     String locUri  = o.optString("localUri", "");
-                    if (!locUri.isEmpty()) {
-                        item = new MessageItem(from, locUri, caption.isEmpty() ? null : caption, status, true);
-                        msgDb.upsert(chatDbKey, dir, "image", null, null, mime,
-                                caption.isEmpty() ? null : caption, locUri,
-                                sTs, status, qt.isEmpty() ? null : qt, qa.isEmpty() ? null : qa);
-                    } else {
-                        item = new MessageItem(from, cid, mime, caption.isEmpty() ? null : caption, status);
-                        msgDb.upsert(chatDbKey, dir, "image", null, cid, mime,
-                                caption.isEmpty() ? null : caption, null,
-                                sTs, status, qt.isEmpty() ? null : qt, qa.isEmpty() ? null : qa);
-                    }
+                    repo.db.upsert(chatDbKey, dir, "image", null,
+                            cid.isEmpty() ? null : cid, mime,
+                            caption.isEmpty() ? null : caption,
+                            locUri.isEmpty() ? null : locUri,
+                            sTs, status, qt.isEmpty() ? null : qt, qa.isEmpty() ? null : qa);
                 } else {
                     String text = o.optString("text", "");
-                    item = new MessageItem(from, text, status);
-                    msgDb.upsert(chatDbKey, dir, "text", text, null, null, null, null,
+                    repo.db.upsert(chatDbKey, dir, "text", text, null, null, null, null,
                             sTs, status, qt.isEmpty() ? null : qt, qa.isEmpty() ? null : qa);
                 }
-                item.serverTs    = sTs;
-                item.quoteText   = qt.isEmpty() ? null : qt;
-                item.quoteAuthor = qa.isEmpty() ? null : qa;
-                rawItems.add(item);
             }
-            rebuildDisplay();
-            // clean up old pref after migration
             prefs.edit().remove(histKey).apply();
-        } catch (Exception ignored) {}
-    }
-
-    private boolean isFromPeer(String srcNum, String srcUuid) {
-        boolean byNum  = notEmpty(peerNumber) && digits(srcNum).equals(digits(peerNumber));
-        boolean byUuid = notEmpty(peerUuid)   && safeEq(srcUuid, peerUuid);
-        return byNum || byUuid;
-    }
-    private boolean isDestThisChat(String destNum, String destUuid) {
-        boolean numMatch  = notEmpty(destNum)  && notEmpty(peerNumber) && digits(destNum).equals(digits(peerNumber));
-        boolean uuidMatch = notEmpty(destUuid) && notEmpty(peerUuid)   && safeEq(destUuid, peerUuid);
-        boolean bothEmpty = !notEmpty(destNum) && !notEmpty(destUuid);
-        return numMatch || uuidMatch || bothEmpty;
-    }
-    private void pushThreadHint(String text, long ts) {
-        try {
-            JSONObject h = new JSONObject();
-            h.put("peer_number", peerNumber == null ? "" : peerNumber);
-            h.put("peer_uuid",   peerUuid   == null ? "" : peerUuid);
-            h.put("peer_name",   peerName   == null ? "" : peerName);
-            h.put("text",        text == null ? "" : text);
-            h.put("ts",          ts);
-            prefs.edit().putString("thread_hint", h.toString()).apply();
+            rawItems.clear();
+            rawItems.addAll(repo.getThread(chatDbKey));
+            rebuildDisplay();
         } catch (Exception ignored) {}
     }
 }

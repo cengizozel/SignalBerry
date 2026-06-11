@@ -15,7 +15,6 @@ import android.os.Looper;
 
 import androidx.core.app.NotificationCompat;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.net.URLEncoder;
@@ -28,10 +27,15 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 import okio.ByteString;
 
-import android.util.Log;
-
 import static com.example.signalberry.Utils.*;
 
+/**
+ * Owns the app's ONLY WebSocket to signal-api (REDESIGN §3.1). Every envelope
+ * funnels into Repo.ingest(); this class only decides notifications. Activities
+ * never open sockets — they observe Repo.
+ *
+ * Sticky: keeps running in background for notifications (API 18 has no Doze).
+ */
 public class MessageService extends Service {
 
     private static final int  NOTIF_ID_FG   = 1;
@@ -43,6 +47,8 @@ public class MessageService extends Service {
     private WebSocket ws;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int retrySec = 1;
+    private boolean destroyed = false;
+    private int wsGeneration = 0; // stale callbacks from a replaced socket are ignored
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
@@ -55,8 +61,8 @@ public class MessageService extends Service {
                 startForeground(NOTIF_ID_FG, buildForegroundNotif());
             }
         } catch (Exception e) {
-            // Android 12+ may deny if system considers app background at start time.
-            // Run without foreground status — notifications will still work while app is alive.
+            // Android 12+ may deny if the app is considered background at start
+            // time. Run without foreground status — fine while the app lives.
         }
         connect();
         return START_STICKY;
@@ -66,18 +72,26 @@ public class MessageService extends Service {
 
     @Override
     public void onDestroy() {
+        destroyed = true;
+        wsGeneration++;
         if (ws != null) { ws.cancel(); ws = null; }
         handler.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
 
-    // ── WebSocket ────────────────────────────────────────────────────────────
+    // ── WebSocket (single owner) ─────────────────────────────────────────────
 
     private void connect() {
+        if (destroyed) return;
         SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
         String ip     = prefs.getString("ip", "");
         String number = prefs.getString("number", "");
         if (isEmpty(ip) || isEmpty(number)) return;
+
+        // never leak the previous socket (the old code opened a new one per
+        // onStartCommand and kept the old reader thread alive)
+        if (ws != null) { ws.cancel(); ws = null; }
+        final int gen = ++wsGeneration;
 
         if (client == null) {
             client = new OkHttpClient.Builder()
@@ -89,166 +103,69 @@ public class MessageService extends Service {
         try {
             String base  = normalizeBase(ip);
             String wsUrl = toWs(base) + "/v1/receive/" + URLEncoder.encode(number, "UTF-8");
-            Log.d("MsgService", "connecting: " + wsUrl);
             Request req  = new Request.Builder().url(wsUrl).build();
             ws = client.newWebSocket(req, new WebSocketListener() {
-                @Override public void onOpen(WebSocket s, Response r)           { retrySec = 1; Log.d("MsgService", "ws open"); }
-                @Override public void onMessage(WebSocket s, String text)       { Log.d("MsgService", "ws msg: " + text.substring(0, Math.min(120, text.length()))); handleEnvelope(text); }
-                @Override public void onMessage(WebSocket s, ByteString bytes)  { handleEnvelope(bytes.utf8()); }
-                @Override public void onClosed(WebSocket s, int c, String r)    { ws = null; Log.d("MsgService", "ws closed"); scheduleReconnect(); }
-                @Override public void onFailure(WebSocket s, Throwable t, Response r) { ws = null; Log.e("MsgService", "ws fail: " + t); scheduleReconnect(); }
+                @Override public void onOpen(WebSocket s, Response r) {
+                    if (gen != wsGeneration) { s.cancel(); return; }
+                    retrySec = 1;
+                    // reconnect = catch up what the socket missed + retry unreported sends
+                    new Thread(() -> {
+                        Repo repo = Repo.get(MessageService.this);
+                        repo.catchUp();
+                        repo.drainReportQueue();
+                    }, "ws-catchup").start();
+                }
+                @Override public void onMessage(WebSocket s, String text) {
+                    if (gen == wsGeneration) handleFrame(text);
+                }
+                @Override public void onMessage(WebSocket s, ByteString bytes) {
+                    if (gen == wsGeneration) handleFrame(bytes.utf8());
+                }
+                @Override public void onClosed(WebSocket s, int c, String r) {
+                    if (gen != wsGeneration) return;
+                    ws = null; scheduleReconnect();
+                }
+                @Override public void onFailure(WebSocket s, Throwable t, Response r) {
+                    if (gen != wsGeneration) return;
+                    ws = null; scheduleReconnect();
+                }
             });
-        } catch (Exception e) { Log.e("MsgService", "connect ex: " + e); scheduleReconnect(); }
+        } catch (Exception e) { scheduleReconnect(); }
     }
 
     private void scheduleReconnect() {
+        if (destroyed) return;
         handler.postDelayed(this::connect, retrySec * 1000L);
         retrySec = Math.min(retrySec * 2, 60);
     }
 
-    // ── Message parsing ──────────────────────────────────────────────────────
+    // ── envelope handling: parse → Repo → maybe notify ──────────────────────
 
-    private void handleEnvelope(String raw) {
+    private void handleFrame(String raw) {
         try {
             JSONObject root = new JSONObject(raw);
             JSONObject env  = root.optJSONObject("envelope");
             if (env == null) return;
 
-            String srcNum  = env.optString("sourceNumber", "");
-            String srcUuid = env.optString("sourceUuid", "");
+            Repo.IngestResult r = Repo.get(this).ingest(env);
+            if (r == null || !r.newMessage || !"in".equals(r.dir)) return;
 
             SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
-
-            // Read sync: another linked device marked a conversation as read
-            JSONObject sync = env.optJSONObject("syncMessage");
-            if (sync != null) {
-                JSONArray readMsgs = sync.optJSONArray("readMessages");
-                if (readMsgs != null) {
-                    for (int i = 0; i < readMsgs.length(); i++) {
-                        JSONObject rm = readMsgs.getJSONObject(i);
-                        String sNum  = rm.optString("senderNumber", "");
-                        String sUuid = rm.optString("senderUuid", "");
-                        long ts      = rm.optLong("timestamp", 0);
-                        if (ts <= 0) continue;
-                        String chatKey = digits(sNum).isEmpty() ? sUuid : digits(sNum);
-                        if (isEmpty(chatKey)) continue;
-                        long curTs = prefs.getLong("read_ts_" + chatKey, 0);
-                        if (ts > curTs) prefs.edit().putLong("read_ts_" + chatKey, ts).apply();
-                    }
-                }
-            }
-
-            // Delete sync from own device
-            if (sync != null) {
-                JSONObject sentMsg = sync.optJSONObject("sentMessage");
-                if (sentMsg != null) {
-                    JSONObject rdSync = sentMsg.optJSONObject("remoteDelete");
-                    if (rdSync != null) {
-                        long targetTs = rdSync.optLong("timestamp", 0);
-                        String destNum  = sentMsg.optString("destinationNumber", "");
-                        String destUuid = sentMsg.optString("destinationUuid", "");
-                        String chatKey  = digits(destNum).isEmpty() ? destUuid : digits(destNum);
-                        if (targetTs > 0 && !isEmpty(chatKey)) {
-                            try { new MessageDatabase(this).deleteByServerTs(chatKey, targetTs); }
-                            catch (Exception ignored) {}
-                        }
-                        return;
-                    }
-                }
-            }
-
-            JSONObject data = env.optJSONObject("dataMessage");
-            if (data == null) return;
-
-            // Remote delete from peer
-            JSONObject rd = data.optJSONObject("remoteDelete");
-            if (rd != null) {
-                long targetTs = rd.optLong("timestamp", 0);
-                String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
-                if (targetTs > 0 && !isEmpty(senderKey)) {
-                    try { new MessageDatabase(this).deleteByServerTs(senderKey, targetTs); }
-                    catch (Exception ignored) {}
-                }
-                return;
-            }
-
-            // Reaction from peer
-            JSONObject rxn = data.optJSONObject("reaction");
-            if (rxn != null) {
-                String emoji    = rxn.optString("emoji", "");
-                long   targetTs = rxn.optLong("targetSentTimestamp", 0);
-                boolean remove  = rxn.optBoolean("isRemove", false);
-                String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
-                if (!isEmpty(emoji) && targetTs > 0 && !isEmpty(senderKey)) {
-                    try { new MessageDatabase(this).updateReaction(senderKey, targetTs, "peer", emoji, remove); }
-                    catch (Exception ignored) {}
-                }
-                return;
-            }
-
-            String text  = data.optString("message", data.optString("text", "")).trim();
-            JSONArray atts = data.optJSONArray("attachments");
-            boolean hasAtt = atts != null && atts.length() > 0;
-
-            if (text.isEmpty() && !hasAtt) return;
-
-            long ts = env.optLong("timestamp", 0);
-            String senderKey = digits(srcNum).isEmpty() ? srcUuid : digits(srcNum);
-
-            // Parse quote data
-            String quoteText = null, quoteAuthor = null;
-            JSONObject quote = data.optJSONObject("quote");
-            if (quote != null) {
-                quoteText = quote.optString("text", "");
-                String myNumber = prefs.getString("number", "");
-                String qNum = quote.optString("authorNumber", quote.optString("author", ""));
-                boolean qFromMe = !isEmpty(myNumber) && digits(qNum).equals(digits(myNumber));
-                quoteAuthor = qFromMe ? "me" : "peer";
-                if (quoteText.isEmpty()) quoteText = "📷 Photo";
-            }
-
-            // Write to DB so the message (with quote) is persisted before app opens
-            if (!isEmpty(text) && ts > 0) {
-                try {
-                    new MessageDatabase(this).upsert(
-                            senderKey, "in", "text", text, null, null, null, null,
-                            ts, Chat.ST_DELIVERED, quoteText, quoteAuthor);
-                } catch (Exception ignored) {}
-            }
-            if (hasAtt && ts > 0) {
-                for (int i = 0; i < atts.length(); i++) {
-                    JSONObject a = atts.optJSONObject(i);
-                    if (a == null) continue;
-                    String cid  = a.optString("id", "");
-                    String mime = a.optString("contentType", "");
-                    if (!isEmpty(cid)) {
-                        try {
-                            new MessageDatabase(this).upsert(
-                                    senderKey, "in", "image", null, cid, mime, null, null,
-                                    ts, Chat.ST_DELIVERED, quoteText, quoteAuthor);
-                        } catch (Exception ignored) {}
-                    }
-                }
-            }
-
-            // Don't notify if this chat is currently open
             String openPeer = prefs.getString("open_chat_peer", "");
-            if (!openPeer.isEmpty() && openPeer.equals(senderKey)) return;
+            if (r.peerKey.equals(openPeer)) return;
 
-            // Resolve display name
-            String name = prefs.getString("contact_name_" + senderKey, "");
+            String name = prefs.getString("contact_name_" + r.peerKey, "");
+            String srcNum  = env.optString("sourceNumber", "");
+            String srcUuid = env.optString("sourceUuid", "");
             if (isEmpty(name)) name = isEmpty(srcNum) ? shortUuid(srcUuid) : srcNum;
 
-            String body = !text.isEmpty() ? text : (hasAtt ? "📷 Photo" : "");
-            showMessageNotif(name, body, srcNum, srcUuid);
-
+            showMessageNotif(name, r.snippet, srcNum, srcUuid);
         } catch (Exception ignored) {}
     }
 
     // ── Notifications ────────────────────────────────────────────────────────
 
     private void showMessageNotif(String sender, String body, String number, String uuid) {
-        Log.d("MsgService", "showing notif from=" + sender + " body=" + body);
         Intent open = new Intent(this, Chat.class)
                 .putExtra("peer_name",   sender)
                 .putExtra("peer_number", number)

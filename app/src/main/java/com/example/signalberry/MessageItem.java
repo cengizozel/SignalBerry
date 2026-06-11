@@ -15,12 +15,19 @@ class MessageItem {
     int status;
     final String dateLabel;    // non-null only for TYPE_DATE_HEADER
 
-    long serverTs;      // Signal-level timestamp (ms); 0 if unknown — used for sending quote replies
+    long serverTs;      // Signal-level timestamp (ms); negative = pending (-nonce)
     long lastEditTs;    // timestamp of the most recent edit (chained); 0 if never edited
     String quoteText;   // non-null when this message is a reply to another
     String quoteAuthor; // "me" or "peer", non-null when quoteText != null
+    long quoteTs;       // server_ts of the quoted message; 0 if none
     java.util.Map<String, String> reactions; // authorKey → emoji, null if none
     String editHistory; // JSON array of previous texts (oldest first), null if never edited
+    String msgType = "text"; // text|image|video|audio|file (media rows share TYPE_IMAGE rendering for now)
+    long clientNonce;   // non-zero on rows born from a local send
+    String peerKey;     // set only where the caller needs cross-thread context (e.g. report queue)
+
+    /** Display timestamp: pendings sort at their send moment. */
+    long displayTs() { return serverTs < 0 ? (clientNonce > 0 ? clientNonce >> 8 : -serverTs >> 8) : serverTs; }
 
     // date separator
     MessageItem(String dateLabel, boolean isHeader) {

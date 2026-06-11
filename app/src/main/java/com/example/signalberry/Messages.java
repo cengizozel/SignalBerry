@@ -18,7 +18,6 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.ImageButton;
-import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AppCompatDelegate;
@@ -28,42 +27,36 @@ import org.json.JSONObject;
 
 import java.net.URLEncoder;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 
 import static com.example.signalberry.Utils.*;
 
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
-import okhttp3.WebSocket;
-import okhttp3.WebSocketListener;
-import okio.ByteString;
-
+/**
+ * Conversation list. Pure Repo observer (REDESIGN §3.1): no WebSocket, no
+ * per-contact bridge hydration — contacts come from /v1/contacts, messages
+ * arrive via MessageService→Repo, and this screen just renders DB summaries.
+ */
 public class Messages extends AppCompatActivity {
 
+    /** Master rows (every conversation). */
     private final List<Map<String, String>> all = new ArrayList<>();
+    /** Rows currently shown (post-filter). The adapter is bound to THIS list
+     *  permanently — the old code forked a new adapter per keystroke. */
+    private final List<Map<String, String>> visible = new ArrayList<>();
     private MessagesAdapter adapter;
     private SharedPreferences prefs;
+    private Repo repo;
 
     private EditText search;
     private boolean isLoading = false;
 
-    // Real-time bits
-    private OkHttpClient wsClient;
-    private WebSocket ws;
-    private int retrySec = 1;
     private Handler handler;
 
-    // Bases / prefs
-    private String restBase;    // http://IP:PORT (Signal REST)
-    private String bridgeBase;  // http://IP:9099    (Bridge)
+    private String restBase;
     private String myNumber;
 
-    // Contact display name cache
     private final Map<String,String> nameByPeerKey = new HashMap<>();
 
     private AvatarCache avatarCache;
-    private MessageDatabase msgDb;
 
     private android.widget.TextView debugLogView;
     private android.widget.ScrollView debugScrollView;
@@ -74,6 +67,26 @@ public class Messages extends AppCompatActivity {
         debugScrollView.post(() -> debugScrollView.fullScroll(android.view.View.FOCUS_DOWN));
     };
 
+    // Coalesced list rebuild on Repo events
+    private boolean rebuildQueued = false;
+    private final Runnable rebuildRun = new Runnable() {
+        @Override public void run() {
+            rebuildQueued = false;
+            rebuildListFromDb();
+        }
+    };
+    private final Repo.Listener repoListener = new Repo.Listener() {
+        @Override public void onItemInserted(String peerKey) { scheduleRebuild(); }
+        @Override public void onItemChanged(String peerKey, long serverTs) { scheduleRebuild(); }
+        @Override public void onEphemeral(String peerKey, String kind) {}
+    };
+
+    private void scheduleRebuild() {
+        if (rebuildQueued) return;
+        rebuildQueued = true;
+        handler.postDelayed(rebuildRun, 200);
+    }
+
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.messages);
@@ -81,11 +94,11 @@ public class Messages extends AppCompatActivity {
 
         handler = new Handler(Looper.getMainLooper());
         prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
+        repo  = Repo.get(this);
 
         ListView list = findViewById(R.id.list_people);
         search = findViewById(R.id.search);
         ImageButton plus = findViewById(R.id.toolbar_add);
-
 
         list.setOnItemClickListener((parent, view, position, id) -> {
             @SuppressWarnings("unchecked")
@@ -100,7 +113,7 @@ public class Messages extends AppCompatActivity {
                 return;
             }
 
-            boolean demoOn = getSharedPreferences("signalberry", MODE_PRIVATE).getBoolean("demo_mode", false);
+            boolean demoOn = prefs.getBoolean("demo_mode", false);
             android.content.Intent intent = new android.content.Intent(Messages.this, Chat.class)
                     .putExtra("peer_name",   demoOn ? DemoData.NAMES[position % DemoData.NAMES.length] : peerName)
                     .putExtra("peer_number", peerNumber)
@@ -112,14 +125,9 @@ public class Messages extends AppCompatActivity {
         plus.setOnClickListener(v ->
                 startActivity(new android.content.Intent(Messages.this, NewChat.class)));
 
-        // read prefs / build bases
-        SharedPreferences sp = getSharedPreferences("signalberry", MODE_PRIVATE);
-        String host       = sp.getString("ip", "");
-        String bridgePref = sp.getString("bridge", ""); // set by ServerConnect
-        myNumber          = sp.getString("number", "");
-
-        restBase   = normalizeBase(host);
-        bridgeBase = normalizeBase(isEmpty(bridgePref) ? deriveBridgeBase(host) : bridgePref);
+        String host = prefs.getString("ip", "");
+        myNumber    = prefs.getString("number", "");
+        restBase    = normalizeBase(host);
 
         if (isEmpty(host) || isEmpty(myNumber)) {
             Toast.makeText(this, "Missing server IP or number", Toast.LENGTH_SHORT).show();
@@ -127,13 +135,10 @@ public class Messages extends AppCompatActivity {
         }
 
         avatarCache = new AvatarCache(getCacheDir(), restBase, myNumber);
-        msgDb = new MessageDatabase(this);
-        adapter = new MessagesAdapter(this, all, avatarCache, prefs.getBoolean("demo_mode", false));
+        adapter = new MessagesAdapter(this, visible, avatarCache, prefs.getBoolean("demo_mode", false));
         list.setAdapter(adapter);
 
-        // service start moved to onResume so activity is guaranteed visible
-
-        loadConversationCache();
+        rebuildListFromDb();   // instant paint from cache
         loadSelfAvatar();
 
         debugLogView    = findViewById(R.id.debug_log);
@@ -167,7 +172,7 @@ public class Messages extends AppCompatActivity {
                             "Demo mode: " + (demoOn ? "ON ✓" : "OFF")
                     }, (dialog, which) -> {
                         if (which == 0) {
-                            getSharedPreferences("signalberry", MODE_PRIVATE).edit().clear().apply();
+                            prefs.edit().clear().apply();
                             startActivity(new Intent(Messages.this, ServerConnect.class));
                             finish();
                         } else if (which == 1) {
@@ -184,7 +189,6 @@ public class Messages extends AppCompatActivity {
                             boolean newDemo = !prefs.getBoolean("demo_mode", false);
                             prefs.edit().putBoolean("demo_mode", newDemo).apply();
                             adapter.setDemoMode(newDemo);
-                            adapter.notifyDataSetChanged();
                             filter(search.getText().toString());
                         }
                     })
@@ -207,12 +211,6 @@ public class Messages extends AppCompatActivity {
             @Override public void onTextChanged(CharSequence s, int st, int b, int c) { filter(s.toString()); }
             @Override public void afterTextChanged(Editable s) {}
         });
-
-        // WS client
-        wsClient = new OkHttpClient.Builder()
-                .readTimeout(0, TimeUnit.MILLISECONDS)
-                .pingInterval(30, TimeUnit.SECONDS)
-                .build();
     }
 
     private void updateDebugPanel() {
@@ -239,14 +237,15 @@ public class Messages extends AppCompatActivity {
         } else {
             startService(svc);
         }
-        openWebSocket();
-        refreshUnreadFromLocal();
-        applyThreadHintIfAny();
+        repo.addListener(repoListener);
+        rebuildListFromDb();   // returning from a chat: unread/snippets changed
     }
 
     @Override protected void onPause() {
         super.onPause();
-        closeWebSocket();
+        repo.removeListener(repoListener);
+        handler.removeCallbacks(rebuildRun);
+        rebuildQueued = false;
     }
 
     @Override protected void onDestroy() {
@@ -254,7 +253,7 @@ public class Messages extends AppCompatActivity {
         DebugLog.unregister(debugListener);
     }
 
-    // ---------------- Initial load (contacts + latest message per peer) ----------------
+    // ---------------- contacts refresh + bridge catch-up ----------------
     private void loadConversations() {
         if (isLoading) return;
         isLoading = true;
@@ -264,106 +263,36 @@ public class Messages extends AppCompatActivity {
                 String contactsJson = httpGet(restBase + "/v1/contacts/" + URLEncoder.encode(myNumber, "UTF-8"));
                 JSONArray contacts = new JSONArray(contactsJson);
 
-                List<Map<String, String>> rows = new ArrayList<>();
-                nameByPeerKey.clear();
+                PeerKeys peerKeys = PeerKeys.get(this);
+                SharedPreferences.Editor ed = prefs.edit();
+                synchronized (nameByPeerKey) { nameByPeerKey.clear(); }
 
                 for (int i = 0; i < contacts.length(); i++) {
                     JSONObject c = contacts.getJSONObject(i);
-
-
                     String display = chooseDisplayName(c);
                     String num     = c.optString("number", "");
                     String uuid    = c.optString("uuid", "");
                     if (isEmpty(num) && isEmpty(uuid)) continue;
 
-                    String key = peerKey(num, uuid);
-                    if (!isEmpty(display)) {
-                        nameByPeerKey.put(key, display);
-                        prefs.edit().putString("contact_name_" + key, display).apply();
-                    }
+                    if (notEmpty(num) && notEmpty(uuid)) peerKeys.learn(uuid, num);
+                    String key = peerKeys.resolve(num, uuid);
 
+                    if (!isEmpty(display)) {
+                        synchronized (nameByPeerKey) { nameByPeerKey.put(key, display); }
+                        ed.putString("contact_name_" + key, display);
+                    }
                     JSONObject prof = c.optJSONObject("profile");
                     boolean hasAvatar = prof != null && prof.optBoolean("has_avatar", false);
-                    String avatarPath = hasAvatar ? uuid : "";
-
-                    // Store contact metadata so DB conversation list can look it up
-                    prefs.edit()
-                            .putString("contact_num_"    + key, num)
-                            .putString("contact_uuid_"   + key, uuid)
-                            .putString("contact_avatar_" + key, avatarPath)
-                            .apply();
-
-                    Map<String, String> row = new HashMap<>();
-                    row.put("name",        display);
-                    row.put("snippet",     "");
-                    row.put("time",        "");
-                    row.put("number",      num);
-                    row.put("uuid",        uuid);
-                    row.put("ts",          "0");
-                    row.put("avatar_path", avatarPath);
-                    rows.add(row);
+                    ed.putString("contact_num_"    + key, num);
+                    ed.putString("contact_uuid_"   + key, uuid);
+                    ed.putString("contact_avatar_" + key, hasAvatar ? uuid : "");
                 }
+                ed.apply();
 
-                // hydrate last message + unread count from bridge
-                for (int i = 0; i < rows.size(); i++) {
-                    Map<String, String> row = rows.get(i);
-                    String num  = row.get("number");
-                    String uuid = row.get("uuid");
-                    String peer = !isEmpty(num) ? num : uuid;
-                    if (isEmpty(peer)) continue;
+                // one global catch-up replaces the per-contact bridge N+1
+                repo.catchUp();
 
-                    String chatKey = !isEmpty(num) ? digits(num) : (uuid != null ? uuid : "");
-                    long readTs = prefs.getLong("read_ts_" + chatKey, 0);
-
-                    try {
-                        long dbAfter = msgDb.getLastTs(chatKey);
-                        String url = bridgeBase + "/messages?peer=" + URLEncoder.encode(peer, "UTF-8")
-                                + "&after=" + dbAfter + "&limit=200";
-                        JSONObject obj = new JSONObject(httpGet(url));
-                        JSONArray items = obj.optJSONArray("items");
-                        if (items != null) {
-                            for (int j = 0; j < items.length(); j++) {
-                                JSONObject it = items.getJSONObject(j);
-                                String dir  = it.optString("dir", "in");
-                                String text = it.optString("text", "");
-                                long   ts   = it.optLong("serverTs", 0);
-                                int    st   = it.optInt("status", Chat.ST_SENT);
-                                if (isEmpty(text) || ts == 0) continue;
-                                int finalSt = "in".equals(dir) ? Math.max(st, Chat.ST_DELIVERED) : st;
-                                msgDb.upsert(chatKey, dir, "text", text, null, null, null, null,
-                                        ts, finalSt, null, null);
-                            }
-                        }
-                        // Now query DB for this peer's latest snippet + unread
-                        List<android.util.Pair<String, String[]>> sums = msgDb.getConversationSummaries();
-                        for (android.util.Pair<String, String[]> s : sums) {
-                            if (chatKey.equals(s.first)) {
-                                row.put("snippet", s.second[0]);
-                                row.put("time",    s.second[1]);
-                                row.put("ts",      s.second[2]);
-                                break;
-                            }
-                        }
-                        int unread = msgDb.countUnread(chatKey, readTs);
-                        row.put("unread", String.valueOf(unread));
-                    } catch (Exception ignored) {}
-                }
-
-                // keep only threads with messages; sort newest first
-                List<Map<String, String>> withMsg = new ArrayList<>();
-                for (Map<String, String> r : rows) {
-                    long ts = parseLongSafe(r.get("ts"));
-                    if (ts > 0) withMsg.add(r);
-                }
-                sortByTsDesc(withMsg);
-
-                runOnUiThread(() -> {
-                    all.clear();
-                    all.addAll(withMsg);
-                    adapter.notifyDataSetChanged();
-                    filter(search.getText().toString());
-                });
-
+                runOnUiThread(this::rebuildListFromDb);
             } catch (Exception e) {
                 runOnUiThread(() -> Toast.makeText(this, "Failed to load chats", Toast.LENGTH_SHORT).show());
             } finally {
@@ -372,345 +301,58 @@ public class Messages extends AppCompatActivity {
         }).start();
     }
 
-    // ---------------- WebSocket: envelopes -> optimistic update + delayed reconcile ----------------
-    private void openWebSocket() {
-        if (ws != null) return;
-        try {
-            String wsUrl = toWs(restBase) + "/v1/receive/" + URLEncoder.encode(myNumber, "UTF-8");
-            Request req = new Request.Builder().url(wsUrl).build();
-            ws = wsClient.newWebSocket(req, new WebSocketListener() {
-                @Override public void onOpen(WebSocket webSocket, Response response) { retrySec = 1; }
-                @Override public void onMessage(WebSocket webSocket, String text) { handleWsPayload(text); }
-                @Override public void onMessage(WebSocket webSocket, ByteString bytes) { handleWsPayload(bytes.utf8()); }
-                @Override public void onClosed(WebSocket webSocket, int code, String reason) { ws = null; scheduleReconnect(); }
-                @Override public void onFailure(WebSocket webSocket, Throwable t, Response r) { ws = null; scheduleReconnect(); }
-            });
-        } catch (Exception e) { scheduleReconnect(); }
-    }
+    // ---------------- list building (DB is the single source of truth) ----------------
 
-    private void scheduleReconnect() {
-        if (isFinishing() || isDestroyed()) return;
-        final int delay = Math.min(retrySec, 16);
-        retrySec = Math.min(retrySec * 2, 16);
-        handler.postDelayed(new Runnable() { @Override public void run() { openWebSocket(); } }, delay * 1000L);
-    }
-
-    private void closeWebSocket() {
-        if (ws != null) { try { ws.close(1000, "leaving"); } catch (Exception ignored) {} ws = null; }
-        retrySec = 1;
-    }
-
-    private void handleWsPayload(String payload) {
-        try {
-            if (payload.trim().startsWith("[")) {
-                JSONArray arr = new JSONArray(payload);
-                for (int i = 0; i < arr.length(); i++) handleEnvelope(arr.getJSONObject(i));
-            } else {
-                handleEnvelope(new JSONObject(payload));
-            }
-        } catch (Exception ignored) {}
-    }
-
-    private void handleEnvelope(JSONObject obj) {
-        JSONObject env = obj.optJSONObject("envelope");
-        if (env == null) return;
-
-        // Incoming message → write to DB + optimistic UI update
-        String srcNum  = env.optString("sourceNumber", env.optString("source", ""));
-        String srcUuid = env.optString("sourceUuid", "");
-        JSONObject data = env.optJSONObject("dataMessage");
-        if (data != null) {
-            // Skip reactions, remote-deletes, and any envelope where message is JSON null
-            if (data.optJSONObject("reaction") != null) data = null;
-            else if (data.optJSONObject("remoteDelete") != null) data = null;
-        }
-        if (data != null) {
-            String rawMsg = data.isNull("message") ? "" : data.optString("message", "");
-            String rawTxt = data.isNull("text")    ? "" : data.optString("text", "");
-            String text = (rawMsg.isEmpty() ? rawTxt : rawMsg).trim();
-            long ts = env.optLong("timestamp", System.currentTimeMillis());
-            if (!isEmpty(text)) {
-                String srcKey = peerKey(srcNum, srcUuid);
-                msgDb.upsert(srcKey, "in", "text", text, null, null, null, null,
-                        ts, Chat.ST_DELIVERED, null, null);
-                runOnUiThread(() ->
-                        updateRowImmediateUI(srcNum, srcUuid, /*outgoing=*/false, text, ts));
-                handler.postDelayed(new Runnable() {
-                    @Override public void run() { refreshOnePeer(srcNum, srcUuid); }
-                }, 800);
-            }
-        }
-
-        // Incoming edit from peer
-        JSONObject editMsgIn = env.optJSONObject("editMessage");
-        if (editMsgIn != null && data == null) {
-            long targetTs = editMsgIn.optLong("targetSentTimestamp", 0);
-            long editEnvTs = env.optLong("timestamp", 0);
-            JSONObject editData = editMsgIn.optJSONObject("dataMessage");
-            String newText = editData != null ? editData.optString("message", "").trim() : "";
-            if (targetTs > 0 && !isEmpty(newText) && (!isEmpty(srcNum) || !isEmpty(srcUuid))) {
-                String srcKey = peerKey(srcNum, srcUuid);
-                msgDb.applyEdit(srcKey, targetTs, newText, editEnvTs);
-                final String fn = srcNum, fu = srcUuid;
-                runOnUiThread(() -> refreshOnePeer(fn, fu));
-            }
-        }
-
-        // Sent echo (you sent from another device) → write to DB + optimistic UI update
-        JSONObject sync = env.optJSONObject("syncMessage");
-        if (sync != null) {
-            JSONObject sent = sync.optJSONObject("sentMessage");
-            if (sent != null) {
-                String destNum  = sent.optString("destinationNumber", "");
-                String destUuid = sent.optString("destinationUuid", "");
-
-                // Edit sync from another device
-                JSONObject editMsgSync = sent.optJSONObject("editMessage");
-                if (editMsgSync != null) {
-                    long targetTs = editMsgSync.optLong("targetSentTimestamp", 0);
-                    long editEnvTs = sent.optLong("timestamp", 0);
-                    JSONObject editData = editMsgSync.optJSONObject("dataMessage");
-                    String newText = editData != null ? editData.optString("message", "").trim() : "";
-                    if (targetTs > 0 && !isEmpty(newText)) {
-                        String destKey = peerKey(destNum, destUuid);
-                        msgDb.applyEdit(destKey, targetTs, newText, editEnvTs);
-                        final String fn = destNum, fu = destUuid;
-                        runOnUiThread(() -> refreshOnePeer(fn, fu));
-                    }
-                }
-
-                String text     = (sent.isNull("message") ? "" : sent.optString("message", "")).trim();
-                long ts         = sent.optLong("timestamp", System.currentTimeMillis());
-                if (!isEmpty(text) && editMsgSync == null) {
-                    String destKey = peerKey(destNum, destUuid);
-                    msgDb.upsert(destKey, "out", "text", text, null, null, null, null,
-                            ts, Chat.ST_SENT, null, null);
-                    runOnUiThread(() ->
-                            updateRowImmediateUI(destNum, destUuid, /*outgoing=*/true, text, ts));
-                    handler.postDelayed(new Runnable() {
-                        @Override public void run() { refreshOnePeer(destNum, destUuid); }
-                    }, 800);
-                }
-            }
-
-            // Read sync: another linked device read a conversation
-            try {
-                org.json.JSONArray readMsgs = sync.optJSONArray("readMessages");
-                if (readMsgs != null) {
-                    for (int i = 0; i < readMsgs.length(); i++) {
-                        JSONObject rm = readMsgs.getJSONObject(i);
-                        String sNum  = rm.optString("senderNumber", "");
-                        String sUuid = rm.optString("senderUuid", "");
-                        long ts      = rm.optLong("timestamp", 0);
-                        if (ts <= 0) continue;
-                        String chatKey = !isEmpty(sNum) ? digits(sNum) : safeTrim(sUuid);
-                        if (isEmpty(chatKey)) continue;
-                        long curTs = prefs.getLong("read_ts_" + chatKey, 0);
-                        if (ts > curTs) prefs.edit().putLong("read_ts_" + chatKey, ts).apply();
-                        final String ck = chatKey;
-                        runOnUiThread(() -> clearUnreadForKey(ck));
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-    }
-
-    // Optimistic UI update (call on UI thread)
-    private void updateRowImmediateUI(String number, String uuid, boolean outgoing, String text, long ts) {
-        final String peer = !isEmpty(number) ? number : uuid;
-        if (isEmpty(peer)) return;
-
-        String key = peerKey(number, uuid);
-        String display = nameByPeerKey.get(key);
-        if (isEmpty(display)) {
-            display = !isEmpty(number) ? number
-                    : (!isEmpty(uuid) ? ("Signal user " + shortUuid(uuid)) : "Unknown");
-            nameByPeerKey.put(key, display);
-        }
-
-        String snippet = (outgoing ? "You: " : "") + text;
-        String time = formatShortTime(ts);
-
-        int idx = findRowIndex(number, uuid);
-        if (idx >= 0) {
-            Map<String, String> row = all.get(idx);
-            row.put("name", display);
-            row.put("number", number == null ? "" : number);
-            row.put("uuid",   uuid   == null ? "" : uuid);
-            row.put("snippet", snippet);
-            row.put("time", time);
-            row.put("ts", String.valueOf(ts));
-            if (!outgoing) {
-                int cur = parseSafeInt(row.get("unread"));
-                row.put("unread", String.valueOf(cur + 1));
-            }
-        } else {
-            Map<String, String> row = new HashMap<>();
-            row.put("name", display);
-            row.put("number", number == null ? "" : number);
-            row.put("uuid",   uuid   == null ? "" : uuid);
-            row.put("snippet", snippet);
-            row.put("time", time);
-            row.put("ts", String.valueOf(ts));
-            row.put("unread", outgoing ? "0" : "1");
-            all.add(row);
-        }
-        sortByTsDesc(all);
-        adapter.notifyDataSetChanged();
-        filter(search.getText().toString());
-    }
-
-    private void refreshOnePeer(String number, String uuid) {
-        // DB was already updated by handleEnvelope; re-query summary for this peer
-        String key = peerKey(number, uuid);
-        List<android.util.Pair<String, String[]>> sums = msgDb.getConversationSummaries();
-        for (android.util.Pair<String, String[]> s : sums) {
-            if (key.equals(s.first)) {
-                final String snippet = s.second[0];
-                final String time    = s.second[1];
-                final long   ts      = parseLongSafe(s.second[2]);
-                runOnUiThread(() -> {
-                    int idx = findRowIndex(number, uuid);
-                    if (idx >= 0) {
-                        Map<String, String> row = all.get(idx);
-                        if (ts >= parseLongSafe(row.get("ts"))) {
-                            row.put("snippet", snippet);
-                            row.put("time", time);
-                            row.put("ts", String.valueOf(ts));
-                            sortByTsDesc(all);
-                            adapter.notifyDataSetChanged();
-                            filter(search.getText().toString());
-                        }
-                    }
-                });
-                return;
-            }
-        }
-    }
-
-    private int findRowIndex(String number, String uuid) {
-        String wantNum = digits(number);
-        String wantUuid = safeTrim(uuid);
-        for (int i = 0; i < all.size(); i++) {
-            Map<String, String> row = all.get(i);
-            String rNum  = digits(row.get("number"));
-            String rUuid = safeTrim(row.get("uuid"));
-            boolean numMatch  = !isEmpty(wantNum)  && wantNum.equals(rNum);
-            boolean uuidMatch = !isEmpty(wantUuid) && wantUuid.equalsIgnoreCase(rUuid);
-            if (numMatch || uuidMatch) return i;
-        }
-        return -1;
-    }
-
-    private void clearUnreadForKey(String chatKey) {
-        for (Map<String, String> row : all) {
-            String num  = row.get("number");
-            String uuid = row.get("uuid");
-            String rKey = !isEmpty(num) ? digits(num) : safeTrim(uuid);
-            if (chatKey.equals(rKey)) {
-                row.put("unread", "0");
-                break;
-            }
-        }
-        adapter.notifyDataSetChanged();
-        filter(search.getText().toString());
-    }
-
-    // ---------------- Unread counts (local, no network) ----------------
-    private void refreshUnreadFromLocal() {
-        String lastReadPeer = prefs.getString("last_read_peer", "");
-        if (lastReadPeer.isEmpty()) return;
-        for (Map<String, String> row : all) {
-            String num  = row.get("number");
-            String uuid = row.get("uuid");
-            String chatKey = !isEmpty(num) ? digits(num) : safeTrim(uuid);
-            if (lastReadPeer.equals(chatKey)) {
-                row.put("unread", "0");
-                break;
-            }
-        }
-        refreshSnippetForPeer(lastReadPeer);
-        prefs.edit().remove("last_read_peer").apply();
-        adapter.notifyDataSetChanged();
-        filter(search.getText().toString());
-    }
-
-    private void refreshSnippetForPeer(String chatKey) {
-        List<android.util.Pair<String, String[]>> sums = msgDb.getConversationSummaries();
-        for (android.util.Pair<String, String[]> s : sums) {
-            if (chatKey.equals(s.first)) {
+    private void rebuildListFromDb() {
+        new Thread(() -> {
+            List<android.util.Pair<String, String[]>> summaries = repo.db.getConversationSummaries();
+            List<Map<String, String>> rows = new ArrayList<>();
+            for (android.util.Pair<String, String[]> s : summaries) {
+                String key     = s.first;
                 String snippet = s.second[0];
                 String time    = s.second[1];
                 String ts      = s.second[2];
-                for (Map<String, String> row : all) {
-                    String rKey = !isEmpty(row.get("number"))
-                            ? digits(row.get("number")) : safeTrim(row.get("uuid"));
-                    if (chatKey.equals(rKey)) {
-                        row.put("snippet", snippet);
-                        row.put("time", time);
-                        row.put("ts", ts);
-                        break;
-                    }
-                }
-                return;
+                String name;
+                synchronized (nameByPeerKey) { name = nameByPeerKey.get(key); }
+                if (isEmpty(name)) name = prefs.getString("contact_name_" + key, key);
+                String num    = prefs.getString("contact_num_" + key, "");
+                String uuid   = prefs.getString("contact_uuid_" + key, "");
+                String avatar = prefs.getString("contact_avatar_" + key, "");
+                long readTs   = prefs.getLong("read_ts_" + key, 0);
+                int unread    = repo.db.countUnread(key, readTs);
+                Map<String, String> row = new HashMap<>();
+                row.put("name",        name);
+                row.put("snippet",     snippet);
+                row.put("time",        time);
+                row.put("ts",          ts);
+                row.put("number",      num);
+                row.put("uuid",        uuid);
+                row.put("avatar_path", avatar);
+                row.put("unread",      String.valueOf(unread));
+                rows.add(row);
             }
-        }
-        // All messages deleted for this peer — remove from list
-        for (int i = all.size() - 1; i >= 0; i--) {
-            String rKey = !isEmpty(all.get(i).get("number"))
-                    ? digits(all.get(i).get("number")) : safeTrim(all.get(i).get("uuid"));
-            if (chatKey.equals(rKey)) { all.remove(i); break; }
-        }
+            runOnUiThread(() -> {
+                all.clear();
+                all.addAll(rows);
+                filter(search == null ? "" : search.getText().toString());
+            });
+        }).start();
     }
 
-    // ---------------- Search filter ----------------
+    // ---------------- Search filter (mutates the bound adapter's list) ----------------
     private void filter(String q) {
         q = q.toLowerCase(Locale.US).trim();
-        List<Map<String, String>> filtered = new ArrayList<>();
+        visible.clear();
         for (Map<String, String> m : all) {
             String name = m.get("name");
             String snip = m.get("snippet");
-            if ((name != null && name.toLowerCase(Locale.US).contains(q)) ||
-                    (snip != null && snip.toLowerCase(Locale.US).contains(q))) {
-                filtered.add(m);
+            if (q.isEmpty()
+                    || (name != null && name.toLowerCase(Locale.US).contains(q))
+                    || (snip != null && snip.toLowerCase(Locale.US).contains(q))) {
+                visible.add(m);
             }
         }
-        ((ListView) findViewById(R.id.list_people)).setAdapter(
-                new MessagesAdapter(this, filtered, avatarCache, prefs.getBoolean("demo_mode", false)));
-    }
-
-    // ---------------- Conversation cache (DB-backed) ----------------
-
-    private void loadConversationCache() {
-        List<android.util.Pair<String, String[]>> summaries = msgDb.getConversationSummaries();
-        if (summaries.isEmpty()) return;
-        List<Map<String, String>> rows = new ArrayList<>();
-        for (android.util.Pair<String, String[]> s : summaries) {
-            String key    = s.first;
-            String snippet = s.second[0];
-            String time   = s.second[1];
-            String ts     = s.second[2];
-            String name   = prefs.getString("contact_name_" + key, key);
-            String num    = prefs.getString("contact_num_" + key, "");
-            String uuid   = prefs.getString("contact_uuid_" + key, "");
-            String avatar = prefs.getString("contact_avatar_" + key, "");
-            long readTs   = prefs.getLong("read_ts_" + key, 0);
-            int unread    = msgDb.countUnread(key, readTs);
-            Map<String, String> row = new HashMap<>();
-            row.put("name",        name);
-            row.put("snippet",     snippet);
-            row.put("time",        time);
-            row.put("ts",          ts);
-            row.put("number",      num);
-            row.put("uuid",        uuid);
-            row.put("avatar_path", avatar);
-            row.put("unread",      String.valueOf(unread));
-            rows.add(row);
-        }
-        all.clear();
-        all.addAll(rows);
         adapter.notifyDataSetChanged();
-        filter(search == null ? "" : search.getText().toString());
     }
 
     // ---------------- Self avatar ----------------
@@ -721,11 +363,6 @@ public class Messages extends AppCompatActivity {
 
         new Thread(() -> {
             try {
-                // Look up own UUID from the accounts list — try /v1/accounts first
-                String json = httpGet(restBase + "/v1/accounts");
-                // accounts is a JSON array of numbers; no UUID exposed there.
-                // Instead use the contacts endpoint with own number to find self entry.
-                // Fallback: try /v1/contacts/{myNumber} and look for self in list.
                 String contactsJson = httpGet(restBase + "/v1/contacts/" + URLEncoder.encode(myNumber, "UTF-8"));
                 org.json.JSONArray arr = new org.json.JSONArray(contactsJson);
                 String selfUuid = null;
@@ -738,6 +375,8 @@ public class Messages extends AppCompatActivity {
                     }
                 }
                 if (isEmpty(selfUuid)) return;
+                prefs.edit().putString("self_uuid", selfUuid).apply();
+                repo.setSelf(myNumber, selfUuid);
                 Bitmap bm = avatarCache.fetch(myNumber, selfUuid);
                 if (bm == null) return;
                 final Bitmap circle = circleClip(bm, size);
@@ -775,43 +414,4 @@ public class Messages extends AppCompatActivity {
         canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint);
         return out;
     }
-
-    // ---------------- Utils ----------------
-    private static void sortByTsDesc(List<Map<String,String>> rows) {
-        Collections.sort(rows, new Comparator<Map<String, String>>() {
-            @Override public int compare(Map<String, String> a, Map<String, String> b) {
-                long ta = parseLongSafe(a.get("ts"));
-                long tb = parseLongSafe(b.get("ts"));
-                if (tb == ta) return 0;
-                return (tb > ta) ? 1 : -1;
-            }
-        });
-    }
-
-    private void applyThreadHintIfAny() {
-        try {
-            String raw = getSharedPreferences("signalberry", MODE_PRIVATE)
-                    .getString("thread_hint", null);
-            if (raw == null || raw.length() == 0) return;
-
-            JSONObject h = new JSONObject(raw);
-            String num  = h.optString("peer_number", "");
-            String uuid = h.optString("peer_uuid", "");
-            String text = h.optString("text", "");
-            long   ts   = h.optLong("ts", System.currentTimeMillis());
-
-            // Optimistic row update: adds new convo if missing, bumps to top, shows "You: ..."
-            updateRowImmediateUI(num, uuid, /*outgoing=*/true, text, ts);
-
-            // clear the hint so it doesn't re-apply
-            getSharedPreferences("signalberry", MODE_PRIVATE)
-                    .edit().remove("thread_hint").apply();
-
-            // optional: schedule a tiny reconcile to pull the last line from the bridge
-            handler.postDelayed(new Runnable() {
-                @Override public void run() { refreshOnePeer(num, uuid); }
-            }, 800);
-        } catch (Exception ignored) {}
-    }
-
 }
