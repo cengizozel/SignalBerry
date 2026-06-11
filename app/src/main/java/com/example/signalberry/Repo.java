@@ -432,6 +432,9 @@ final class Repo {
                 : (quoteAuthorRaw.equals(selfNumber) || quoteAuthorRaw.equals(selfUuid)) ? "me" : "peer";
 
         int status = "in".equals(dir) ? MessageDatabase.ST_DELIVERED : MessageDatabase.ST_SENT;
+        // Note-to-Self echoes are delivered BY DEFINITION (we just received one
+        // on this device, and self-thread messages never get delivery receipts)
+        if ("out".equals(dir) && peer.equals(selfNumber)) status = MessageDatabase.ST_DELIVERED;
         boolean inserted = false;
         String snippet = text;
         synchronized (writeLock) {
@@ -886,6 +889,8 @@ final class Repo {
         String attId = safeOptString(row, "attId");
         String mime = safeOptString(row, "mime");
         int status = row.optInt("status", 1);
+        if ("out".equals(dir) && peer.equals(selfNumber))
+            status = Math.max(status, MessageDatabase.ST_DELIVERED); // self-thread: see ingestDataMessage
         long quoteTs = row.optLong("quoteTs", 0);
         String quoteText = row.isNull("quoteText") ? null : row.optString("quoteText", null);
         String quoteAuthorRaw = PeerKeys.normalize(row.optString("quoteAuthor", ""));
