@@ -78,7 +78,13 @@ public class Messages extends AppCompatActivity {
     private final Repo.Listener repoListener = new Repo.Listener() {
         @Override public void onItemInserted(String peerKey) { scheduleRebuild(); }
         @Override public void onItemChanged(String peerKey, long serverTs) { scheduleRebuild(); }
-        @Override public void onEphemeral(String peerKey, String kind) {}
+        @Override public void onEphemeral(String peerKey, String kind) {
+            if (kind != null && kind.startsWith("api_mismatch")) {
+                handler.post(() -> Toast.makeText(Messages.this,
+                        "Bridge/app version mismatch — some messages may not sync. "
+                        + "Update the bridge or the app.", Toast.LENGTH_LONG).show());
+            }
+        }
     };
 
     private void scheduleRebuild() {

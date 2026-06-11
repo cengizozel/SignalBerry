@@ -776,16 +776,45 @@ final class Repo {
 
     void catchUp() { catchUp(null); }
 
+    /** Warn once if the bridge speaks a different API version than this build
+     *  expects — turns "silently missing messages" into a visible signal. */
+    private void checkApiVersion(String base) {
+        if (apiMismatchWarned) return;
+        try {
+            JSONObject h = new JSONObject(httpGet(base + "/health"));
+            int got = h.optInt("api_version", EXPECTED_API_VERSION); // absent = old bridge, assume ok
+            if (got != EXPECTED_API_VERSION) {
+                apiMismatchWarned = true;
+                DebugLog.log("BRIDGE API MISMATCH: bridge=" + got
+                        + " app=" + EXPECTED_API_VERSION + " — update one to match");
+                main.post(() -> {
+                    for (Listener l : listenersSnapshot())
+                        l.onEphemeral("", "api_mismatch:" + got);
+                });
+            }
+        } catch (Exception ignored) {} // health unreachable: catch-up will fail loudly on its own
+    }
+
+    private java.util.List<Listener> listenersSnapshot() {
+        synchronized (listeners) { return new ArrayList<>(listeners); }
+    }
+
     /** Drain /v2/changes from the stored cursor. Runs on the caller's thread;
      *  single-flight (concurrent calls would race the cursor pref). The first
      *  drain after migration runs in reconcile mode (§3.6 step 7): legacy
      *  local-clock rows adopt the bridge's Signal ts instead of duplicating.
      *  With a notifier (the service passes one), missed incoming messages
      *  beyond each peer's notified watermark are reported after the drain. */
+    /** Bumped in lockstep with bridge API_VERSION; a mismatch means /v2/changes
+     *  rows may have a shape this build doesn't understand. */
+    static final int EXPECTED_API_VERSION = 3;
+    private boolean apiMismatchWarned = false;
+
     void catchUp(CatchUpNotifier notifier) {
         synchronized (catchUpLock) {
             String base = prefs.getString("bridge", "");
             if (isEmpty(base)) return;
+            checkApiVersion(base);
             boolean reconcile = !prefs.getBoolean("reconcile_done", false);
             long cursor = reconcile ? 0 : prefs.getLong("bridge_seq", 0);
             long reconcileTarget = -1;
