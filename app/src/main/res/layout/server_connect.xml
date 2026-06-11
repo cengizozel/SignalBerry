@@ -60,7 +60,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Only to use SignalBerry away from home WiFi. Put your signal-cli address in the top field. Both fields below are required once you go remote."
+                android:text="For using SignalBerry away from home WiFi. The top field and Bridge URL tell the app where to reach your server. A bridge token is recommended: it is the password that keeps anyone who finds your address from reading or sending your messages."
                 android:textSize="12sp"
                 android:textColor="#999999"
                 android:paddingBottom="8dp" />
@@ -105,7 +105,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="An extra gate at Cloudflare's edge. Leave blank unless you created an Access service token. The bridge token already guards your server."
+                android:text="An extra gate at Cloudflare's edge: it checks a service token and turns away anyone without it before the request ever reaches your server, a second layer on top of the bridge token. Leave blank unless you set up an Access service token in Cloudflare."
                 android:textSize="12sp"
                 android:textColor="#999999"
                 android:paddingBottom="8dp" />
