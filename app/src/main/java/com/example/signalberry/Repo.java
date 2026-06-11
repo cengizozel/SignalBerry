@@ -497,6 +497,46 @@ final class Repo {
         notifyChanged(peerKey, 0);
     }
 
+    /** Send read receipts for newly-read incoming messages, via the bridge's
+     *  server-side fan-out. Gated: settings toggle (default OFF — the user's
+     *  Signal account has read receipts disabled), never for the self-thread.
+     *  Tracks a per-peer high-water mark so each ts is receipted once. */
+    void queueReadReceipts(String peerKey, String recipient, List<MessageItem> thread) {
+        if (!prefs.getBoolean("send_read_receipts", false)) return;
+        if (isEmpty(recipient) || isEmpty(peerKey)) return;
+        if (peerKey.equals(selfNumber) || PeerKeys.normalize(recipient).equals(selfNumber)) return;
+        long mark = prefs.getLong("receipted_ts_" + peerKey, 0);
+        final java.util.ArrayList<Long> ts = new java.util.ArrayList<>();
+        long newMark = mark;
+        for (MessageItem m : thread) {
+            if (!"peer".equals(m.from) || m.serverTs <= mark) continue;
+            ts.add(m.serverTs);
+            if (m.serverTs > newMark) newMark = m.serverTs;
+        }
+        if (ts.isEmpty()) return;
+        while (ts.size() > 25) ts.remove(0); // cap: newest 25
+        final long markToStore = newMark;
+        reportIo.execute(() -> {
+            try {
+                String base = prefs.getString("bridge", "");
+                if (isEmpty(base)) return;
+                JSONObject o = new JSONObject();
+                o.put("peer", peerKey);
+                o.put("recipient", recipient);
+                o.put("timestamps", new JSONArray(ts));
+                int code = httpPostJson(base + "/v2/read-receipts", o.toString());
+                if (code >= 200 && code < 300) {
+                    synchronized (readTsLock) {
+                        if (markToStore > prefs.getLong("receipted_ts_" + peerKey, 0))
+                            prefs.edit().putLong("receipted_ts_" + peerKey, markToStore).apply();
+                    }
+                }
+            } catch (Exception e) {
+                DebugLog.log("read-receipt queue failed: " + e);
+            }
+        });
+    }
+
     List<MessageItem> getThread(String peerKey) { return db.getMessages(peerKey); }
 
     // ── bridge change-feed catch-up ───────────────────────────────────────────

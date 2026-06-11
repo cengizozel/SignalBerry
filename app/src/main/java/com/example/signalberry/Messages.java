@@ -163,13 +163,15 @@ public class Messages extends AppCompatActivity {
             boolean dbgOn  = prefs.getBoolean("debug_log", false);
             boolean darkOn = prefs.getBoolean("dark_mode", false);
             boolean demoOn = prefs.getBoolean("demo_mode", false);
+            boolean rrOn   = prefs.getBoolean("send_read_receipts", false);
             new AlertDialog.Builder(this)
                     .setTitle("Settings")
                     .setItems(new String[]{
                             "Log out",
                             "Debug log: " + (dbgOn ? "ON ✓" : "OFF"),
                             "Dark mode: " + (darkOn ? "ON ✓" : "OFF"),
-                            "Demo mode: " + (demoOn ? "ON ✓" : "OFF")
+                            "Demo mode: " + (demoOn ? "ON ✓" : "OFF"),
+                            "Send read receipts: " + (rrOn ? "ON ✓" : "OFF")
                     }, (dialog, which) -> {
                         if (which == 0) {
                             prefs.edit().clear().apply();
@@ -185,11 +187,27 @@ public class Messages extends AppCompatActivity {
                             AppCompatDelegate.setDefaultNightMode(
                                     newDark ? AppCompatDelegate.MODE_NIGHT_YES
                                             : AppCompatDelegate.MODE_NIGHT_NO);
-                        } else {
+                        } else if (which == 3) {
                             boolean newDemo = !prefs.getBoolean("demo_mode", false);
                             prefs.edit().putBoolean("demo_mode", newDemo).apply();
                             adapter.setDemoMode(newDemo);
                             filter(search.getText().toString());
+                        } else {
+                            boolean newRr = !prefs.getBoolean("send_read_receipts", false);
+                            if (newRr) {
+                                new AlertDialog.Builder(Messages.this)
+                                        .setTitle("Send read receipts?")
+                                        .setMessage("Only enable this if read receipts are also "
+                                                + "enabled in Signal on your phone — otherwise "
+                                                + "contacts would see read status your account "
+                                                + "setting is meant to hide.")
+                                        .setPositiveButton("Enable", (dd, ww) ->
+                                                prefs.edit().putBoolean("send_read_receipts", true).apply())
+                                        .setNegativeButton("Cancel", null)
+                                        .show();
+                            } else {
+                                prefs.edit().putBoolean("send_read_receipts", false).apply();
+                            }
                         }
                     })
                     .show();

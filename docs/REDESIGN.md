@@ -222,7 +222,9 @@ checklist first.
   excluded). `upgradeAllOutStatus` and the ±2s path are deleted.
 - Outbound read receipts: when Chat is foregrounded and rows are newly visible →
   enqueue bridge `/v2/read-receipts` (cap: 25 newest unread; never for self-thread;
-  Settings toggle default ON).
+  Settings toggle **default OFF** — the user's Signal account has read receipts
+  disabled, and this client must not leak read state the account-level setting
+  suppresses; the toggle exists for if they ever re-enable it on the phone).
 - `syncMessage.readMessages` ingestion kept — phone reads clear app badges (served
   while-closed via the bridge markers feed §2.3).
 - Unread watermark = **max(server_ts of rows actually rendered)** — wall-clock

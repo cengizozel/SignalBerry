@@ -136,7 +136,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
         void bind(MessageItem m) {
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
-            tvStatus.setText(statusMark(m.status));
+            bindStatus(m.status, tvStatus);
             bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
         }
@@ -149,21 +149,21 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         final TextView tvQuote;
         final ImageView iv;
         final TextView tvCaption, tvReactions;
+        final ImageView ivPlay;
+        final TextView tvMeta;
         PeerImageVH(@NonNull View v) {
             super(v);
             quoteBlock  = v.findViewById(R.id.quoteBlock);
             quoteLine   = v.findViewById(R.id.quoteLine);
             tvQuote     = v.findViewById(R.id.tvQuote);
             iv          = v.findViewById(R.id.ivImage);
+            ivPlay      = v.findViewById(R.id.ivPlayOverlay);
+            tvMeta      = v.findViewById(R.id.tvMediaMeta);
             tvCaption   = v.findViewById(R.id.tvCaption);
             tvReactions = v.findViewById(R.id.tvReactions);
         }
         void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
-            String src = m.localUri != null ? m.localUri : base + "/v1/attachments/" + m.attachmentId;
-            iv.setImageDrawable(null);
-            iv.setTag(src);
-            loader.load(src, iv);
-            iv.setOnClickListener(l != null ? v -> l.onImageClick(pos) : null);
+            bindMedia(m, loader, base, pos, l, iv, ivPlay, tvMeta);
             if (m.caption != null && !m.caption.isEmpty()) {
                 tvCaption.setText(m.caption);
                 tvCaption.setVisibility(View.VISIBLE);
@@ -181,23 +181,23 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         final TextView tvQuote;
         final ImageView iv;
         final TextView tvStatus, tvCaption, tvReactions;
+        final ImageView ivPlay;
+        final TextView tvMeta;
         MeImageVH(@NonNull View v) {
             super(v);
             quoteBlock  = v.findViewById(R.id.quoteBlock);
             quoteLine   = v.findViewById(R.id.quoteLine);
             tvQuote     = v.findViewById(R.id.tvQuote);
             iv          = v.findViewById(R.id.ivImage);
+            ivPlay      = v.findViewById(R.id.ivPlayOverlay);
+            tvMeta      = v.findViewById(R.id.tvMediaMeta);
             tvStatus    = v.findViewById(R.id.tvStatus);
             tvCaption   = v.findViewById(R.id.tvCaption);
             tvReactions = v.findViewById(R.id.tvReactions);
         }
         void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
-            String src = m.localUri != null ? m.localUri : base + "/v1/attachments/" + m.attachmentId;
-            iv.setImageDrawable(null);
-            iv.setTag(src);
-            loader.load(src, iv);
-            iv.setOnClickListener(l != null ? v -> l.onImageClick(pos) : null);
-            tvStatus.setText(statusMark(m.status));
+            bindMedia(m, loader, base, pos, l, iv, ivPlay, tvMeta);
+            bindStatus(m.status, tvStatus);
             if (m.caption != null && !m.caption.isEmpty()) {
                 tvCaption.setText(m.caption);
                 tvCaption.setVisibility(View.VISIBLE);
@@ -207,6 +207,47 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
         }
+    }
+
+    /** Shared media binding for image/video/audio/file bubbles. */
+    private static void bindMedia(MessageItem m, ImageLoader loader, String base, int pos,
+                                  OnImageClickListener l, ImageView iv,
+                                  ImageView ivPlay, TextView tvMeta) {
+        boolean isVideo = "video".equals(m.msgType);
+        boolean isOther = "audio".equals(m.msgType) || "file".equals(m.msgType);
+        iv.setImageDrawable(null);
+        iv.setMinimumWidth(dp(iv, 200));
+        iv.setMinimumHeight(dp(iv, 120));
+        iv.setBackgroundColor(0x22000000);
+
+        if (ivPlay != null) ivPlay.setVisibility(isVideo || isOther ? View.VISIBLE : View.GONE);
+        if (tvMeta != null) tvMeta.setVisibility(View.GONE);
+
+        String tag;
+        if (isVideo) {
+            tag = m.localUri != null ? "vthumb-local:" + m.localUri
+                    : "vthumb:" + (m.attachmentId == null ? "" : m.attachmentId);
+            if (tvMeta != null && m.attachmentId != null) {
+                tvMeta.setText("Video");
+                tvMeta.setVisibility(View.VISIBLE);
+            }
+        } else if (isOther) {
+            tag = "none";
+            if (tvMeta != null) {
+                tvMeta.setText("audio".equals(m.msgType) ? "Audio" : "File");
+                tvMeta.setVisibility(View.VISIBLE);
+            }
+        } else {
+            tag = m.localUri != null ? m.localUri
+                    : "att:" + (m.attachmentId == null ? "" : m.attachmentId);
+        }
+        iv.setTag(tag);
+        if (!"none".equals(tag)) loader.load(tag, iv, base);
+        iv.setOnClickListener(l != null ? v -> l.onImageClick(pos) : null);
+    }
+
+    private static int dp(View v, int dps) {
+        return (int) (dps * v.getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private static void bindReactions(MessageItem m, TextView tv) {
@@ -244,65 +285,162 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         return s;
     }
 
-    private static String statusMark(int st) {
+    /** Tick states: pending dim ellipsis, sent single, delivered double (dim),
+     *  read double (accent blue), failed red cross. Text glyphs (U+2713/2715)
+     *  render fine on Android 4.3; clock/emoji glyphs do not. */
+    private static void bindStatus(int st, TextView tv) {
         switch (st) {
-            case Chat.ST_PENDING:   return "🕒";
-            case Chat.ST_SENT:      return "✓";
-            case Chat.ST_DELIVERED: return "✓✓";
-            case Chat.ST_READ:      return "✓✓";
-            default:                return "";
+            case Chat.ST_PENDING:   tv.setText("\u2026");        tv.setTextColor(0xFF9E9E9E); break;
+            case Chat.ST_SENT:      tv.setText("\u2713");        tv.setTextColor(0xFF9E9E9E); break;
+            case Chat.ST_DELIVERED: tv.setText("\u2713\u2713"); tv.setTextColor(0xFF9E9E9E); break;
+            case Chat.ST_READ:      tv.setText("\u2713\u2713"); tv.setTextColor(0xFF2196F3); break;
+            case Chat.ST_FAILED:    tv.setText("\u2715 failed \u2014 tap to retry"); tv.setTextColor(0xFFD32F2F); break;
+            default:                tv.setText("");
         }
     }
 
-    // ---- image loader with in-memory cache — handles http:// and content:// ----
+    // ---- media loader: shared executor, bounded decode, store-backed ----
     static class ImageLoader {
         private final LruCache<String, Bitmap> cache;
         private final Context ctx;
+        private final java.util.concurrent.ExecutorService exec =
+                java.util.concurrent.Executors.newFixedThreadPool(2);
+        private static final int MAX_DIM = 640; // bubble cap on a 720px screen
 
         ImageLoader(Context ctx) {
             this.ctx = ctx.getApplicationContext();
             final int maxKb = (int)(Runtime.getRuntime().maxMemory() / 1024);
-            cache = new LruCache<String, Bitmap>(maxKb / 16) {
+            cache = new LruCache<String, Bitmap>(maxKb / 8) {
                 @Override protected int sizeOf(String key, Bitmap value) {
                     return value.getByteCount() / 1024;
                 }
             };
         }
 
-        void load(final String src, final ImageView target) {
-            Bitmap cached = cache.get(src);
+        void load(final String tag, final ImageView target, final String baseSignal) {
+            Bitmap cached = cache.get(tag);
             if (cached != null) {
-                if (src.equals(target.getTag())) target.setImageBitmap(cached);
+                if (tag.equals(target.getTag())) target.setImageBitmap(cached);
                 return;
             }
-            new Thread(new Runnable() {
-                @Override public void run() {
-                    Bitmap bmp = fetch(src);
-                    if (bmp != null) cache.put(src, bmp);
-                    target.post(new Runnable() {
-                        @Override public void run() {
-                            if (src.equals(target.getTag())) target.setImageBitmap(bmp);
-                        }
-                    });
-                }
-            }).start();
+            exec.execute(() -> {
+                final Bitmap bmp = fetch(tag, baseSignal);
+                if (bmp != null) cache.put(tag, bmp);
+                target.post(() -> {
+                    if (!tag.equals(target.getTag())) return;
+                    if (bmp != null) {
+                        target.setImageBitmap(bmp);
+                        target.setBackgroundColor(0x00000000);
+                    } else {
+                        // failed state: report-image glyph; bind sets the dim bg
+                        target.setImageResource(android.R.drawable.ic_menu_report_image);
+                    }
+                });
+            });
         }
 
-        private Bitmap fetch(String src) {
+        private Bitmap fetch(String tag, String baseSignal) {
             try {
-                if (src.startsWith("content://")) {
-                    InputStream is = ctx.getContentResolver().openInputStream(Uri.parse(src));
-                    return is != null ? BitmapFactory.decodeStream(is) : null;
+                if (tag.startsWith("vthumb-local:"))
+                    return videoThumb(java.io.File.createTempFile("x", null), tag.substring(13), true);
+                if (tag.startsWith("vthumb:")) {
+                    String attId = tag.substring(7);
+                    if (attId.isEmpty()) return null;
+                    AttachmentStore store = AttachmentStore.get(ctx);
+                    if (!store.has(attId)) return null;   // not downloaded: keep placeholder
+                    return videoThumb(store.fileFor(attId), null, false);
                 }
-                HttpURLConnection c = (HttpURLConnection) new URL(src).openConnection();
+                if (tag.startsWith("att:")) {
+                    String attId = tag.substring(4);
+                    if (attId.isEmpty()) return null;
+                    java.io.File f = AttachmentStore.get(ctx).fetch(baseSignal, attId);
+                    return f == null ? null : decodeBounded(
+                            new java.io.FileInputStream(f), new java.io.FileInputStream(f));
+                }
+                if (tag.startsWith("content://") || tag.startsWith("file://")) {
+                    Uri u = Uri.parse(tag);
+                    InputStream a = ctx.getContentResolver().openInputStream(u);
+                    InputStream b = ctx.getContentResolver().openInputStream(u);
+                    return decodeBounded(a, b);
+                }
+                if (tag.startsWith("/")) {
+                    return decodeBounded(new java.io.FileInputStream(tag),
+                            new java.io.FileInputStream(tag));
+                }
+                // plain http(s) (legacy rows)
+                HttpURLConnection c = (HttpURLConnection) new URL(tag).openConnection();
                 c.setConnectTimeout(8000);
-                c.setReadTimeout(8000);
-                c.setRequestMethod("GET");
+                c.setReadTimeout(15000);
                 if (c.getResponseCode() != 200) { c.disconnect(); return null; }
-                try (InputStream is = c.getInputStream()) {
-                    return BitmapFactory.decodeStream(is);
+                try {
+                    java.io.File tmp = java.io.File.createTempFile("img", null, ctx.getCacheDir());
+                    try (InputStream is = c.getInputStream();
+                         java.io.OutputStream os = new java.io.FileOutputStream(tmp)) {
+                        byte[] buf = new byte[16384]; int n;
+                        while ((n = is.read(buf)) != -1) os.write(buf, 0, n);
+                    }
+                    Bitmap out = decodeBounded(new java.io.FileInputStream(tmp),
+                            new java.io.FileInputStream(tmp));
+                    //noinspection ResultOfMethodCallIgnored
+                    tmp.delete();
+                    return out;
                 } finally {
                     c.disconnect();
+                }
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        /** Two-pass decode: bounds first, then inSampleSize to the bubble cap —
+         *  a full-res 12MP decode would eat half the Q10 heap per row. */
+        private static Bitmap decodeBounded(InputStream boundsIn, InputStream dataIn) {
+            try {
+                BitmapFactory.Options o = new BitmapFactory.Options();
+                o.inJustDecodeBounds = true;
+                BitmapFactory.decodeStream(boundsIn, null, o);
+                try { boundsIn.close(); } catch (Exception ignored) {}
+                int sample = 1;
+                while (o.outWidth / (sample * 2) >= MAX_DIM || o.outHeight / (sample * 2) >= MAX_DIM)
+                    sample *= 2;
+                BitmapFactory.Options o2 = new BitmapFactory.Options();
+                o2.inSampleSize = sample;
+                Bitmap out = BitmapFactory.decodeStream(dataIn, null, o2);
+                try { dataIn.close(); } catch (Exception ignored) {}
+                return out;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        /** Thumbnail for a cached video file (persisted alongside the video). */
+        private Bitmap videoThumb(java.io.File videoFile, String contentUri, boolean isContent) {
+            try {
+                java.io.File thumbFile = isContent
+                        ? new java.io.File(ctx.getCacheDir(),
+                            "vt" + contentUri.hashCode() + ".jpg")
+                        : new java.io.File(videoFile.getParent(), videoFile.getName() + ".thumb.jpg");
+                if (thumbFile.exists() && thumbFile.length() > 0)
+                    return decodeBounded(new java.io.FileInputStream(thumbFile),
+                            new java.io.FileInputStream(thumbFile));
+                android.media.MediaMetadataRetriever r = new android.media.MediaMetadataRetriever();
+                try {
+                    if (isContent) {
+                        r.setDataSource(ctx, Uri.parse(contentUri));
+                    } else {
+                        // fd overload: mediaserver cannot open app-private paths on 4.3
+                        java.io.FileInputStream fis = new java.io.FileInputStream(videoFile);
+                        r.setDataSource(fis.getFD());
+                        fis.close();
+                    }
+                    Bitmap frame = r.getFrameAtTime(-1);
+                    if (frame == null) return null;
+                    try (java.io.OutputStream os = new java.io.FileOutputStream(thumbFile)) {
+                        frame.compress(Bitmap.CompressFormat.JPEG, 80, os);
+                    }
+                    return frame;
+                } finally {
+                    try { r.release(); } catch (Exception ignored) {}
                 }
             } catch (Exception e) {
                 return null;

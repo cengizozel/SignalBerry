@@ -104,6 +104,8 @@ public class Chat extends AppCompatActivity {
                     rawItems.addAll(fresh);
                     rebuildDisplay();
                     advanceReadWatermark();
+                    repo.queueReadReceipts(chatDbKey,
+                            notEmpty(peerNumber) ? peerNumber : peerUuid, rawItems);
                 });
             }).start();
         }
@@ -199,12 +201,19 @@ public class Chat extends AppCompatActivity {
         }
         chatAdapter = new ChatAdapter(displayItems, baseSignal, this);
         chatAdapter.setOnImageClickListener(pos -> {
+            if (pos < 0 || pos >= displayItems.size()) return;
+            MessageItem tapped = displayItems.get(pos);
+            if ("video".equals(tapped.msgType)) { openVideo(tapped); return; }
+            if ("audio".equals(tapped.msgType) || "file".equals(tapped.msgType)) {
+                openExternally(tapped);
+                return;
+            }
             ArrayList<String> sources = new ArrayList<>();
             int viewerPos = 0;
             int imgIndex = 0;
             for (int i = 0; i < displayItems.size(); i++) {
                 MessageItem m = displayItems.get(i);
-                if (m.type == MessageItem.TYPE_IMAGE) {
+                if (m.type == MessageItem.TYPE_IMAGE && "image".equals(m.msgType)) {
                     String src = m.localUri != null ? m.localUri
                             : (m.attachmentId != null ? baseSignal + "/v1/attachments/" + m.attachmentId : null);
                     if (src != null) {
@@ -470,24 +479,41 @@ public class Chat extends AppCompatActivity {
         final String mime = (mimeRaw != null) ? mimeRaw : "application/octet-stream";
         final String kind = Repo.kindFromMime(mime);
         final String cap  = caption.isEmpty() ? null : caption;
-        final String uriStr = uri.toString();
-
-        final long nonce = repo.beginSend(chatDbKey, kind, null, mime, cap, uriStr, 0, null, null);
-        if (nonce <= 0) { Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show(); return; }
+        final String recipient = notEmpty(peerNumber) ? peerNumber : peerUuid;
 
         new Thread(() -> {
-            try {
-                byte[] bytes;
-                try (InputStream is = getContentResolver().openInputStream(uri);
-                     ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-                    byte[] buf = new byte[8192];
-                    int n;
-                    while ((n = is.read(buf)) != -1) bos.write(buf, 0, n);
-                    bytes = bos.toByteArray();
-                }
+            // 1. copy into the store FIRST — content:// permissions die with the
+            //    picker; the old code persisted the transient URI (blank-after-
+            //    restart bug). Local key promoted to the real att_id if learned.
+            final AttachmentStore store = AttachmentStore.get(this);
+            final String localKey = "local-" + System.currentTimeMillis();
+            java.io.File stored = store.importLocal(uri, localKey);
+            if (stored == null) {
+                runOnUiThread(() -> Toast.makeText(this, "Could not read file", Toast.LENGTH_SHORT).show());
+                return;
+            }
+            long cap_bytes = "image".equals(kind)
+                    ? AttachmentStore.MAX_IMAGE_BYTES : AttachmentStore.MAX_MEDIA_BYTES;
+            if (stored.length() > cap_bytes) {
+                final String limit = (cap_bytes / (1024 * 1024)) + " MB";
+                //noinspection ResultOfMethodCallIgnored
+                stored.delete();
+                runOnUiThread(() -> Toast.makeText(this,
+                        "File too large (limit " + limit + ")", Toast.LENGTH_LONG).show());
+                return;
+            }
 
-                String b64 = "data:" + mime + ";base64," + Base64.encodeToString(bytes, Base64.NO_WRAP);
-                String tsRaw = sendAttachment(b64, caption);
+            final String storedPath = stored.getAbsolutePath();
+            final long nonce = repo.beginSend(chatDbKey, kind, null, mime, cap, storedPath, 0, null, null);
+            if (nonce <= 0) {
+                runOnUiThread(() -> Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show());
+                return;
+            }
+
+            try {
+                // 2. constant-memory streaming upload (REDESIGN §3.5)
+                String tsRaw = AttachmentStore.sendStreaming(baseSignal, myNumber, recipient,
+                        caption, mime, stored, null, null, null);
                 if (tsRaw != null) {
                     repo.confirmSend(chatDbKey, nonce, tsRaw, kind, caption, null, mime, 0, null, null);
                 } else {
@@ -502,23 +528,68 @@ public class Chat extends AppCompatActivity {
         }).start();
     }
 
-    /** Returns the raw response timestamp string, or null on failure.
-     *  Media sends use a long read timeout: signal-cli decodes + dispatches the
-     *  whole upload before responding (8s made timeout-but-sent the COMMON case). */
-    private String sendAttachment(String base64Data, String caption) {
-        try {
-            String url = baseSignal + "/v2/send";
-            JSONObject body = new JSONObject();
-            body.put("message", caption == null ? "" : caption);
-            body.put("number", myNumber);
-            JSONArray rcpts = new JSONArray();
-            if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
-            body.put("recipients", rcpts);
-            JSONArray atts = new JSONArray();
-            atts.put(base64Data);
-            body.put("base64_attachments", atts);
-            return postForTimestamp(url, body.toString(), 120_000);
-        } catch (Exception e) { return null; }
+    // -------------------- MEDIA OPEN --------------------
+
+    /** Tap on a video bubble: play if cached/local, else size-gated download. */
+    private void openVideo(MessageItem m) {
+        if (m.localUri != null) {
+            Intent play = new Intent(this, PlayerActivity.class);
+            if (m.localUri.startsWith("/"))
+                play.putExtra(PlayerActivity.EXTRA_FILE, m.localUri);
+            else
+                play.putExtra(PlayerActivity.EXTRA_URI, m.localUri);
+            startActivity(play);
+            return;
+        }
+        if (isEmpty(m.attachmentId)) return;
+        final String attId = m.attachmentId;
+        final AttachmentStore store = AttachmentStore.get(this);
+        if (store.has(attId)) {
+            Intent play = new Intent(this, PlayerActivity.class);
+            play.putExtra(PlayerActivity.EXTRA_FILE, store.fileFor(attId).getAbsolutePath());
+            startActivity(play);
+            return;
+        }
+        Toast.makeText(this, "Downloading video…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            java.io.File f = store.fetch(baseSignal, attId);
+            runOnUiThread(() -> {
+                if (f == null) {
+                    Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                scheduleReload(); // thumbnail can render now
+                Intent play = new Intent(this, PlayerActivity.class);
+                play.putExtra(PlayerActivity.EXTRA_FILE, f.getAbsolutePath());
+                startActivity(play);
+            });
+        }).start();
+    }
+
+    /** Audio/files: download to the store, hand off via FileProvider. */
+    private void openExternally(MessageItem m) {
+        if (isEmpty(m.attachmentId)) return;
+        final String attId = m.attachmentId;
+        final String mime = isEmpty(m.mime) ? "*/*" : m.mime;
+        new Thread(() -> {
+            java.io.File f = AttachmentStore.get(this).fetch(baseSignal, attId);
+            runOnUiThread(() -> {
+                if (f == null) {
+                    Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                try {
+                    android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                            this, getPackageName() + ".files", f);
+                    Intent view = new Intent(Intent.ACTION_VIEW);
+                    view.setDataAndType(uri, mime);
+                    view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivity(view);
+                } catch (Exception e) {
+                    Toast.makeText(this, "No app can open this file", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }).start();
     }
 
     // -------------------- TYPING INDICATORS --------------------
