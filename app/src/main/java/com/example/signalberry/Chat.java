@@ -34,6 +34,7 @@ import static com.example.signalberry.Utils.*;
  */
 public class Chat extends AppCompatActivity {
 
+    static final int ST_REMOTE_DELETED = MessageDatabase.ST_REMOTE_DELETED;
     static final int ST_FAILED    = MessageDatabase.ST_FAILED;
     static final int ST_PENDING   = MessageDatabase.ST_PENDING;
     static final int ST_SENT      = MessageDatabase.ST_SENT;
@@ -91,6 +92,19 @@ public class Chat extends AppCompatActivity {
             runOnUiThread(() -> { if (tvTyping != null) tvTyping.setVisibility(android.view.View.GONE); });
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+
+    // Scroll state: only auto-scroll when the user is already at the bottom
+    private boolean atBottom = true;
+    private int unseenWhileScrolled = 0;
+    private android.widget.FrameLayout btnJumpBottom;
+    private android.widget.TextView tvJumpUnread;
+
+    // In-chat search
+    private android.widget.LinearLayout chatSearchBar;
+    private EditText chatSearchInput;
+    private android.widget.TextView chatSearchCount;
+    private final List<Integer> searchMatches = new ArrayList<>(); // displayItems positions
+    private int searchIndex = -1;
 
     // Coalesced thread reload: listener events can burst during catch-up
     private boolean reloadQueued = false;
@@ -190,7 +204,7 @@ public class Chat extends AppCompatActivity {
 
         // RecyclerView
         recycler = findViewById(R.id.chat_list);
-        LinearLayoutManager lm = new LinearLayoutManager(this);
+        final LinearLayoutManager lm = new LinearLayoutManager(this);
         lm.setStackFromEnd(true);
         recycler.setLayoutManager(lm);
         demoMode = prefs.getBoolean("demo_mode", false);
@@ -230,6 +244,42 @@ public class Chat extends AppCompatActivity {
             startActivity(intent);
         });
         recycler.setAdapter(chatAdapter);
+
+        btnJumpBottom = findViewById(R.id.btn_jump_bottom);
+        tvJumpUnread  = findViewById(R.id.tv_jump_unread);
+        btnJumpBottom.setOnClickListener(v -> {
+            recycler.scrollToPosition(Math.max(0, displayItems.size() - 1));
+            setAtBottom(true);
+        });
+        recycler.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override public void onScrolled(RecyclerView rv, int dx, int dy) {
+                int last = lm.findLastVisibleItemPosition();
+                setAtBottom(last >= displayItems.size() - 2);
+            }
+        });
+
+        // In-chat search
+        chatSearchBar   = findViewById(R.id.chat_search_bar);
+        chatSearchInput = findViewById(R.id.chat_search_input);
+        chatSearchCount = findViewById(R.id.chat_search_count);
+        findViewById(R.id.btn_chat_search).setOnClickListener(v -> {
+            chatSearchBar.setVisibility(android.view.View.VISIBLE);
+            chatSearchInput.requestFocus();
+        });
+        findViewById(R.id.btn_search_close).setOnClickListener(v -> closeSearch());
+        findViewById(R.id.btn_search_up).setOnClickListener(v -> stepSearch(-1));
+        findViewById(R.id.btn_search_down).setOnClickListener(v -> stepSearch(1));
+        chatSearchInput.setOnEditorActionListener((v, actionId, event) -> {
+            runSearch(chatSearchInput.getText().toString());
+            return true;
+        });
+        chatSearchInput.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable s) {
+                runSearch(s.toString());
+            }
+        });
 
         // Reply bar
         replyPreviewBar   = findViewById(R.id.reply_preview);
@@ -392,10 +442,46 @@ public class Chat extends AppCompatActivity {
                         replyTs, qt, qa);
             } else {
                 repo.failSend(chatDbKey, nonce);
-                runOnUiThread(() ->
-                        Toast.makeText(Chat.this, "Send failed — tap the message to retry", Toast.LENGTH_SHORT).show());
+                final String err = lastSendError;
+                runOnUiThread(() -> {
+                    if (err != null && err.toLowerCase(java.util.Locale.US).contains("untrusted")) {
+                        promptTrustIdentity();
+                    } else {
+                        Toast.makeText(Chat.this, "Send failed — tap the message to retry", Toast.LENGTH_SHORT).show();
+                    }
+                });
             }
         }).start();
+    }
+
+    /** The peer's safety number changed (new device/reinstall) — sends fail
+     *  until the new identity is trusted. */
+    private void promptTrustIdentity() {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Safety number changed")
+                .setMessage(peerName + "'s safety number has changed (they may have "
+                        + "reinstalled Signal or switched devices). Trust the new "
+                        + "identity to keep messaging?")
+                .setPositiveButton("Trust", (d, w) -> new Thread(() -> {
+                    try {
+                        String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+                        JSONObject body = new JSONObject();
+                        body.put("trust_all_known_keys", true);
+                        int code = httpPutJson(baseSignal + "/v1/identities/"
+                                + URLEncoder.encode(myNumber, "UTF-8") + "/trust/"
+                                + URLEncoder.encode(peer, "UTF-8"), body.toString());
+                        runOnUiThread(() -> Toast.makeText(Chat.this,
+                                code >= 200 && code < 300
+                                        ? "Identity trusted — tap the failed message to resend"
+                                        : "Trust failed (" + code + ")",
+                                Toast.LENGTH_LONG).show());
+                    } catch (Exception e) {
+                        runOnUiThread(() -> Toast.makeText(Chat.this,
+                                "Trust failed", Toast.LENGTH_SHORT).show());
+                    }
+                }).start())
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void retryFailedSend(MessageItem failed) {
@@ -438,6 +524,9 @@ public class Chat extends AppCompatActivity {
         } catch (Exception e) { return null; }
     }
 
+    /** Last send-failure response body (for untrusted-identity detection). */
+    private static volatile String lastSendError = "";
+
     /** Shared POST helper: returns raw "timestamp" field as string, or null. */
     private static String postForTimestamp(String url, String json, int timeoutMs) {
         try {
@@ -450,7 +539,19 @@ public class Chat extends AppCompatActivity {
                 os.write(json.getBytes("UTF-8"));
             }
             int code = c.getResponseCode();
-            if (code < 200 || code >= 300) { c.disconnect(); return null; }
+            if (code < 200 || code >= 300) {
+                try (java.io.InputStream es = c.getErrorStream();
+                     java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
+                    if (es != null) {
+                        byte[] buf = new byte[1024]; int n;
+                        while ((n = es.read(buf)) != -1) bos.write(buf, 0, n);
+                    }
+                    lastSendError = bos.toString("UTF-8");
+                } catch (Exception ignored) { lastSendError = ""; }
+                c.disconnect();
+                return null;
+            }
+            lastSendError = "";
             String tsRaw;
             try (java.io.InputStream is = c.getInputStream();
                  java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream()) {
@@ -628,7 +729,83 @@ public class Chat extends AppCompatActivity {
             displayItems.add(m);
         }
         chatAdapter.notifyDataSetChanged();
-        if (!displayItems.isEmpty()) recycler.scrollToPosition(displayItems.size() - 1);
+        if (displayItems.isEmpty()) return;
+        if (atBottom) {
+            recycler.scrollToPosition(displayItems.size() - 1);
+        } else {
+            // don't yank the user out of scrollback; surface a hint instead
+            unseenWhileScrolled++;
+            updateJumpButton();
+        }
+        if (chatSearchBar != null && chatSearchBar.getVisibility() == android.view.View.VISIBLE)
+            runSearch(chatSearchInput.getText().toString());
+    }
+
+    private void setAtBottom(boolean value) {
+        if (atBottom == value) return;
+        atBottom = value;
+        if (atBottom) unseenWhileScrolled = 0;
+        updateJumpButton();
+    }
+
+    private void updateJumpButton() {
+        if (btnJumpBottom == null) return;
+        btnJumpBottom.setVisibility(atBottom ? android.view.View.GONE : android.view.View.VISIBLE);
+        if (!atBottom && unseenWhileScrolled > 0) {
+            tvJumpUnread.setText(String.valueOf(unseenWhileScrolled));
+            tvJumpUnread.setVisibility(android.view.View.VISIBLE);
+        } else {
+            tvJumpUnread.setVisibility(android.view.View.GONE);
+        }
+    }
+
+    // -------------------- in-chat search --------------------
+
+    private void closeSearch() {
+        chatSearchBar.setVisibility(android.view.View.GONE);
+        chatSearchInput.setText("");
+        searchMatches.clear();
+        searchIndex = -1;
+        chatAdapter.setHighlightTs(0);
+        chatAdapter.notifyDataSetChanged();
+    }
+
+    private void runSearch(String q) {
+        searchMatches.clear();
+        searchIndex = -1;
+        String ql = q.toLowerCase(java.util.Locale.US).trim();
+        if (ql.length() >= 2) {
+            for (int i = 0; i < displayItems.size(); i++) {
+                MessageItem m = displayItems.get(i);
+                if (m.type == MessageItem.TYPE_DATE_HEADER || m.status == ST_REMOTE_DELETED) continue;
+                String hay = m.text != null ? m.text : m.caption;
+                if (hay != null && hay.toLowerCase(java.util.Locale.US).contains(ql))
+                    searchMatches.add(i);
+            }
+        }
+        if (searchMatches.isEmpty()) {
+            chatSearchCount.setText(ql.length() >= 2 ? "0" : "");
+            chatAdapter.setHighlightTs(0);
+            chatAdapter.notifyDataSetChanged();
+        } else {
+            searchIndex = searchMatches.size() - 1; // newest match first
+            showSearchMatch();
+        }
+    }
+
+    private void stepSearch(int delta) {
+        if (searchMatches.isEmpty()) return;
+        searchIndex = (searchIndex + delta + searchMatches.size()) % searchMatches.size();
+        showSearchMatch();
+    }
+
+    private void showSearchMatch() {
+        int pos = searchMatches.get(searchIndex);
+        chatSearchCount.setText((searchIndex + 1) + "/" + searchMatches.size());
+        MessageItem m = displayItems.get(pos);
+        chatAdapter.setHighlightTs(m.serverTs);
+        chatAdapter.notifyDataSetChanged();
+        recycler.scrollToPosition(pos);
     }
 
     private static String dayKey(long ts) {
@@ -665,6 +842,7 @@ public class Chat extends AppCompatActivity {
         if (displayPos < 0 || displayPos >= displayItems.size()) return;
         MessageItem m = displayItems.get(displayPos);
         if (m.type == MessageItem.TYPE_DATE_HEADER || m.serverTs == 0) return;
+        if (m.status == ST_REMOTE_DELETED) return; // placeholder: no actions
 
         if (selectionMode) {
             if (selectedTs.contains(m.serverTs)) selectedTs.remove(m.serverTs);
@@ -688,6 +866,10 @@ public class Chat extends AppCompatActivity {
         container.addView(emojiRow);
 
         boolean canEdit = "me".equals(m.from) && m.type == MessageItem.TYPE_TEXT && m.serverTs > 0;
+        boolean selfThread = notEmpty(myNumber) && notEmpty(peerNumber)
+                && digits(myNumber).equals(digits(peerNumber));
+        boolean canRemoteDelete = "me".equals(m.from) && m.serverTs > 0 && !selfThread
+                && System.currentTimeMillis() - m.serverTs < 24L * 3600 * 1000;
 
         android.app.AlertDialog[] ref = {null};
         for (String e : emojis) {
@@ -704,21 +886,23 @@ public class Chat extends AppCompatActivity {
             emojiRow.addView(tv);
         }
 
-        if (canEdit) {
+        if (canEdit || canRemoteDelete) {
             android.widget.LinearLayout actionRow = new android.widget.LinearLayout(this);
             actionRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
             actionRow.setGravity(android.view.Gravity.CENTER);
             actionRow.setPadding(16, 4, 16, 16);
 
-            android.widget.Button btnEdit = new android.widget.Button(this);
-            btnEdit.setText("✏ Edit");
-            btnEdit.setOnClickListener(v -> {
-                if (ref[0] != null) ref[0].dismiss();
-                showEditDialog(m);
-            });
-            actionRow.addView(btnEdit);
+            if (canEdit) {
+                android.widget.Button btnEdit = new android.widget.Button(this);
+                btnEdit.setText("✏ Edit");
+                btnEdit.setOnClickListener(v -> {
+                    if (ref[0] != null) ref[0].dismiss();
+                    showEditDialog(m);
+                });
+                actionRow.addView(btnEdit);
+            }
 
-            if (m.editHistory != null) {
+            if (canEdit && m.editHistory != null) {
                 android.widget.Button btnHist = new android.widget.Button(this);
                 btnHist.setText("📋 History");
                 btnHist.setOnClickListener(v -> {
@@ -726,6 +910,15 @@ public class Chat extends AppCompatActivity {
                     showEditHistory(m);
                 });
                 actionRow.addView(btnHist);
+            }
+            if (canRemoteDelete) {
+                android.widget.Button btnRd = new android.widget.Button(this);
+                btnRd.setText("🗑 Everyone");
+                btnRd.setOnClickListener(v -> {
+                    if (ref[0] != null) ref[0].dismiss();
+                    confirmRemoteDelete(m);
+                });
+                actionRow.addView(btnRd);
             }
             container.addView(actionRow);
         }
@@ -795,6 +988,32 @@ public class Chat extends AppCompatActivity {
                 });
             } catch (Exception ignored) {}
         }).start();
+    }
+
+    private void confirmRemoteDelete(MessageItem m) {
+        new android.app.AlertDialog.Builder(this)
+                .setMessage("Delete this message for everyone?")
+                .setPositiveButton("Delete", (d, w) -> new Thread(() -> {
+                    try {
+                        String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+                        JSONObject body = new JSONObject();
+                        body.put("recipient", peer);
+                        body.put("timestamp", m.serverTs);
+                        int code = httpDeleteJson(baseSignal + "/v1/remote-delete/"
+                                + URLEncoder.encode(myNumber, "UTF-8"), body.toString());
+                        if (code >= 200 && code < 300) {
+                            repo.remoteDeleteLocal(chatDbKey, m.serverTs);
+                        } else {
+                            runOnUiThread(() -> Toast.makeText(Chat.this,
+                                    "Delete failed (too old?)", Toast.LENGTH_SHORT).show());
+                        }
+                    } catch (Exception e) {
+                        runOnUiThread(() -> Toast.makeText(Chat.this,
+                                "Delete failed", Toast.LENGTH_SHORT).show());
+                    }
+                }).start())
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void enterSelectionMode(long firstTs) {

@@ -22,7 +22,66 @@
             android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_centerInParent="true"
             android:text="Chat" android:textStyle="bold" android:textSize="18sp"/>
+
+        <ImageButton
+            android:id="@+id/btn_chat_search"
+            android:layout_width="36dp" android:layout_height="36dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_search"
+            android:contentDescription="Search messages"/>
     </RelativeLayout>
+
+    <!-- In-chat search (toggled from the title bar) -->
+    <LinearLayout
+        android:id="@+id/chat_search_bar"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@color/colorSurface"
+        android:paddingStart="8dp" android:paddingEnd="4dp"
+        android:visibility="gone">
+
+        <EditText
+            android:id="@+id/chat_search_input"
+            android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="Search messages"
+            android:singleLine="true"
+            android:imeOptions="actionSearch"
+            android:textSize="14sp"
+            android:background="@android:color/transparent"/>
+
+        <TextView
+            android:id="@+id/chat_search_count"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textSize="12sp"
+            android:paddingStart="4dp" android:paddingEnd="4dp"
+            android:textColor="@color/colorTextMuted"/>
+
+        <ImageButton
+            android:id="@+id/btn_search_up"
+            android:layout_width="36dp" android:layout_height="36dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/arrow_up_float"
+            android:contentDescription="Previous match"/>
+
+        <ImageButton
+            android:id="@+id/btn_search_down"
+            android:layout_width="36dp" android:layout_height="36dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/arrow_down_float"
+            android:contentDescription="Next match"/>
+
+        <ImageButton
+            android:id="@+id/btn_search_close"
+            android:layout_width="36dp" android:layout_height="36dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:contentDescription="Close search"/>
+    </LinearLayout>
 
     <!-- Selection bar (shown in multi-select mode) -->
     <LinearLayout
@@ -61,14 +120,47 @@
             android:contentDescription="Delete selected"/>
     </LinearLayout>
 
-    <!-- Messages list (RecyclerView now) -->
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/chat_list"
+    <!-- Messages list + jump-to-bottom overlay -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:padding="8dp"
-        android:clipToPadding="false" />
+        android:layout_weight="1">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/chat_list"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:padding="8dp"
+            android:clipToPadding="false" />
+
+        <FrameLayout
+            android:id="@+id/btn_jump_bottom"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="12dp"
+            android:background="@drawable/bg_jump_bottom"
+            android:visibility="gone">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_gravity="center"
+                android:src="@android:drawable/arrow_down_float"
+                android:contentDescription="Jump to latest"/>
+
+            <TextView
+                android:id="@+id/tv_jump_unread"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:background="@drawable/bg_badge"
+                android:textColor="#FFFFFF"
+                android:textSize="10sp"
+                android:paddingLeft="5dp" android:paddingRight="5dp"
+                android:visibility="gone"/>
+        </FrameLayout>
+    </FrameLayout>
 
     <!-- Typing indicator (shown when peer is typing) -->
     <TextView

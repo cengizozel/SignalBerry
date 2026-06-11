@@ -37,8 +37,9 @@ class MessageDatabase extends SQLiteOpenHelper {
     private static final String T          = "messages";
 
     // status values
+    static final int ST_REMOTE_DELETED = -3; // peer/own remote delete; renders a placeholder
     static final int ST_FAILED   = -2; // pending that can no longer confirm; tap-to-retry
-    static final int ST_DELETED  = -1; // tombstone; kept so re-delivery stays deduped
+    static final int ST_DELETED  = -1; // local-only tombstone; hidden entirely
     static final int ST_PENDING  = 0;
     static final int ST_SENT     = 1;
     static final int ST_DELIVERED= 2;
@@ -252,9 +253,9 @@ class MessageDatabase extends SQLiteOpenHelper {
         if (id == -1) {
             // never resurrect tombstones, never downgrade status
             db.execSQL("UPDATE " + T + " SET status=MAX(status,?) " +
-                    "WHERE peer_key=? AND dir=? AND server_ts=? AND att_id=? AND status!=?",
+                    "WHERE peer_key=? AND dir=? AND server_ts=? AND att_id=? AND status>=0",
                     new Object[]{status, peerKey, dir, serverTs,
-                            attId == null ? "" : attId, ST_DELETED});
+                            attId == null ? "" : attId});
         }
         return id;
     }
@@ -401,13 +402,13 @@ class MessageDatabase extends SQLiteOpenHelper {
     boolean applyReceipt(String peerKey, long ts, int newStatus) {
         SQLiteDatabase db = getWritableDatabase();
         Cursor c = db.rawQuery("SELECT COUNT(*) FROM " + T +
-                " WHERE peer_key=? AND dir='out' AND (server_ts=? OR last_edit_ts=?) AND status!=" + ST_DELETED,
+                " WHERE peer_key=? AND dir='out' AND (server_ts=? OR last_edit_ts=?) AND status>=0",
                 new String[]{peerKey, String.valueOf(ts), String.valueOf(ts)});
         boolean any = c.moveToFirst() && c.getInt(0) > 0;
         c.close();
         if (!any) return false;
         db.execSQL("UPDATE " + T + " SET status=MAX(status,?) " +
-                "WHERE peer_key=? AND dir='out' AND (server_ts=? OR last_edit_ts=?) AND status!=" + ST_DELETED,
+                "WHERE peer_key=? AND dir='out' AND (server_ts=? OR last_edit_ts=?) AND status>=0",
                 new Object[]{newStatus, peerKey, ts, ts});
         return true;
     }
@@ -551,7 +552,7 @@ class MessageDatabase extends SQLiteOpenHelper {
         String dispTs = "(CASE WHEN m.server_ts<0 THEN ((-m.server_ts)>>8) ELSE m.server_ts END)";
         String dispTsBare = "(CASE WHEN server_ts<0 THEN ((-server_ts)>>8) ELSE server_ts END)";
         String sql =
-                "SELECT m.peer_key, m.dir, m.text, m.att_id, m.msg_type, " + dispTs + " dts" +
+                "SELECT m.peer_key, m.dir, m.text, m.att_id, m.msg_type, " + dispTs + " dts, m.status" +
                 " FROM " + T + " m" +
                 " INNER JOIN (SELECT peer_key, MAX(" + dispTsBare + ") mts" +
                 "   FROM " + T + " WHERE status!=" + ST_DELETED + " GROUP BY peer_key) x" +
@@ -568,8 +569,10 @@ class MessageDatabase extends SQLiteOpenHelper {
             String att  = c.getString(3);
             String type = c.getString(4);
             long   ts   = c.getLong(5);
-            String snip = !isEmpty(txt) ? txt : snippetFor(type, att);
-            if ("out".equals(dir)) snip = "You: " + snip;
+            int rowSt = c.getInt(6);
+            String snip = rowSt == ST_REMOTE_DELETED ? "Message deleted"
+                    : (!isEmpty(txt) ? txt : snippetFor(type, att));
+            if ("out".equals(dir) && rowSt != ST_REMOTE_DELETED) snip = "You: " + snip;
             out.add(new Pair<>(pk, new String[]{snip, formatShortTime(ts), String.valueOf(ts)}));
         }
         c.close();
@@ -597,6 +600,15 @@ class MessageDatabase extends SQLiteOpenHelper {
     void deleteByServerTs(String peerKey, long serverTs) {
         getWritableDatabase().execSQL("UPDATE " + T + " SET status=? WHERE peer_key=? AND (server_ts=? OR last_edit_ts=?)",
                 new Object[]{ST_DELETED, peerKey, serverTs, serverTs});
+    }
+
+    /** Remote delete: official clients show a placeholder, not a vanished bubble. */
+    void remoteDeleteByServerTs(String peerKey, long serverTs) {
+        getWritableDatabase().execSQL(
+                "UPDATE " + T + " SET status=?, text='', caption=NULL, att_id='', local_uri=NULL, " +
+                "reactions=NULL, quote_text=NULL WHERE peer_key=? AND (server_ts=? OR last_edit_ts=?) " +
+                "AND status!=" + ST_DELETED,
+                new Object[]{ST_REMOTE_DELETED, peerKey, serverTs, serverTs});
     }
 
     void deleteMessages(String peerKey, java.util.Collection<Long> timestamps) {
@@ -640,6 +652,11 @@ class MessageDatabase extends SQLiteOpenHelper {
         String from   = "out".equals(dir) ? "me" : "peer";
 
         MessageItem item;
+        if (status == ST_REMOTE_DELETED) {
+            item = new MessageItem(from, "", status);
+            item.serverTs = ts;
+            return item;
+        }
         boolean isMedia = !"text".equals(type);
         if (isMedia) {
             if (!isEmpty(locUri))

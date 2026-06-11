@@ -37,6 +37,9 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private OnLongPressListener longPressListener;
     private OnItemClickListener itemClickListener;
     private java.util.Set<Long> selectedTs = new java.util.HashSet<>();
+    private long highlightTs = 0;
+
+    void setHighlightTs(long ts) { this.highlightTs = ts; }
 
     ChatAdapter(List<MessageItem> data, String restBase, Context ctx) {
         this.data = data;
@@ -85,7 +88,9 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             return false;
         });
         boolean selected = m.serverTs > 0 && selectedTs.contains(m.serverTs);
-        h.itemView.setBackgroundColor(selected ? 0x331976D2 : android.graphics.Color.TRANSPARENT);
+        boolean highlighted = highlightTs != 0 && m.serverTs == highlightTs;
+        h.itemView.setBackgroundColor(selected ? 0x331976D2
+                : highlighted ? 0x33FFC107 : android.graphics.Color.TRANSPARENT);
         if (h instanceof MeTextVH)         ((MeTextVH) h).bind(m);
         else if (h instanceof PeerTextVH)  ((PeerTextVH) h).bind(m);
         else if (h instanceof MeImageVH)   ((MeImageVH) h).bind(m, loader, restBase, pos, imageClickListener);
@@ -115,7 +120,9 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvReactions = v.findViewById(R.id.tvReactions);
         }
         void bind(MessageItem m) {
+            if (m.status == Chat.ST_REMOTE_DELETED) { bindDeleted(tvMessage, quoteBlock, tvReactions); return; }
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
+            tvMessage.setTypeface(null, android.graphics.Typeface.NORMAL);
             bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
         }
@@ -135,7 +142,13 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvReactions = v.findViewById(R.id.tvReactions);
         }
         void bind(MessageItem m) {
+            if (m.status == Chat.ST_REMOTE_DELETED) {
+                bindDeleted(tvMessage, quoteBlock, tvReactions);
+                tvStatus.setText("");
+                return;
+            }
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
+            tvMessage.setTypeface(null, android.graphics.Typeface.NORMAL);
             bindStatus(m.status, tvStatus);
             bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
@@ -248,6 +261,17 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     private static int dp(View v, int dps) {
         return (int) (dps * v.getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private static void bindDeleted(TextView tvMessage, LinearLayout quoteBlock, TextView tvReactions) {
+        android.text.SpannableString s = new android.text.SpannableString("Message deleted");
+        s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.ITALIC),
+                0, s.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        s.setSpan(new android.text.style.ForegroundColorSpan(0xFF9E9E9E),
+                0, s.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        tvMessage.setText(s);
+        quoteBlock.setVisibility(View.GONE);
+        tvReactions.setVisibility(View.GONE);
     }
 
     private static void bindReactions(MessageItem m, TextView tv) {

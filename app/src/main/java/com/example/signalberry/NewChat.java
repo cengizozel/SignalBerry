@@ -18,8 +18,13 @@ import java.util.*;
 
 public class NewChat extends AppCompatActivity {
 
+    /** Contacts without an existing thread. */
     private final List<Map<String, String>> rows = new ArrayList<>();
+    /** What's currently displayed (filtered, possibly + the number row). */
+    private final List<Map<String, String>> visible = new ArrayList<>();
     private android.widget.SimpleAdapter adapter;
+    private String restBase;
+    private String myNumber;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -30,7 +35,7 @@ public class NewChat extends AppCompatActivity {
         EditText search = findViewById(R.id.search);
 
         adapter = new android.widget.SimpleAdapter(
-                this, rows, R.layout.row_chat,
+                this, visible, R.layout.row_chat,
                 new String[]{"name", "snippet", "time"},
                 new int[]{R.id.name, R.id.snippet, R.id.time});
         list.setAdapter(adapter);
@@ -38,39 +43,43 @@ public class NewChat extends AppCompatActivity {
         list.setOnItemClickListener((parent, view, position, id) -> {
             @SuppressWarnings("unchecked")
             Map<String, String> item = (Map<String, String>) parent.getItemAtPosition(position);
-            String peerName   = item.get("name");
             String peerNumber = item.get("number");
             String peerUuid   = item.get("uuid");
 
+            if ("lookup".equals(item.get("action"))) {
+                lookupNumber(item.get("number"));
+                return;
+            }
             if ((peerNumber == null || peerNumber.trim().isEmpty()) &&
                     (peerUuid   == null || peerUuid.trim().isEmpty())) {
                 Toast.makeText(this, "No identifier for this contact", Toast.LENGTH_SHORT).show();
                 return;
             }
-
-            startActivity(new android.content.Intent(NewChat.this, Chat.class)
-                    .putExtra("peer_name",   peerName)
-                    .putExtra("peer_number", peerNumber)
-                    .putExtra("peer_uuid",   peerUuid));
-            finish();
+            openChat(item.get("name"), peerNumber, peerUuid);
         });
 
-        // Build list = contacts WITHOUT any messages in bridge
+        String host = getSharedPreferences("signalberry", MODE_PRIVATE).getString("ip", "");
+        myNumber    = getSharedPreferences("signalberry", MODE_PRIVATE).getString("number", "");
+        restBase    = normalizeBase(host);
+
+        // Build list = contacts WITHOUT any local thread (DB check — the old
+        // version made one bridge HTTP call per contact)
         new Thread(() -> {
             try {
-                String host   = getSharedPreferences("signalberry", MODE_PRIVATE).getString("ip", "");
-                String number = getSharedPreferences("signalberry", MODE_PRIVATE).getString("number", "");
-                if (isEmpty(host) || isEmpty(number)) {
+                if (isEmpty(host) || isEmpty(myNumber)) {
                     runOnUiThread(() -> Toast.makeText(this, "Missing server IP or number", Toast.LENGTH_SHORT).show());
                     return;
                 }
 
-                String base  = normalizeBase(host);
-                String bbase = deriveBridgeBase(host);
-
-                String contactsJson = httpGet(base + "/v1/contacts/" + URLEncoder.encode(number, "UTF-8"));
+                String contactsJson = httpGet(restBase + "/v1/contacts/" + URLEncoder.encode(myNumber, "UTF-8"));
                 JSONArray contacts = new JSONArray(contactsJson);
 
+                Set<String> withThread = new HashSet<>();
+                for (android.util.Pair<String, String[]> s :
+                        Repo.get(this).db.getConversationSummaries())
+                    withThread.add(s.first);
+
+                PeerKeys peerKeys = PeerKeys.get(this);
                 List<Map<String, String>> out = new ArrayList<>();
                 for (int i = 0; i < contacts.length(); i++) {
                     JSONObject c = contacts.getJSONObject(i);
@@ -78,42 +87,24 @@ public class NewChat extends AppCompatActivity {
                     String num     = c.optString("number", "");
                     String uuid    = c.optString("uuid", "");
                     if (isEmpty(num) && isEmpty(uuid)) continue;
+                    if (withThread.contains(peerKeys.resolve(num, uuid))) continue;
 
-                    String peer = !isEmpty(num) ? num : uuid;
-                    // Ask bridge if ANY message exists (limit=1)
-                    boolean hasAny = false;
-                    try {
-                        String url = bbase + "/messages?peer=" + URLEncoder.encode(peer, "UTF-8")
-                                + "&after=0&limit=1";
-                        String json = httpGet(url);
-                        JSONObject obj = new JSONObject(json);
-                        JSONArray items = obj.optJSONArray("items");
-                        hasAny = (items != null && items.length() > 0);
-                    } catch (Exception ignored) {}
-
-                    if (!hasAny) {
-                        Map<String, String> row = new HashMap<>();
-                        row.put("name", display);
-                        row.put("snippet", ""); // empty
-                        row.put("time", "");    // empty
-                        row.put("number", num);
-                        row.put("uuid",   uuid);
-                        out.add(row);
-                    }
+                    Map<String, String> row = new HashMap<>();
+                    row.put("name", display);
+                    row.put("snippet", "");
+                    row.put("time", "");
+                    row.put("number", num);
+                    row.put("uuid",   uuid);
+                    out.add(row);
                 }
 
-                // Sort A→Z
-                Collections.sort(out, new Comparator<Map<String,String>>() {
-                    @Override public int compare(Map<String, String> a, Map<String, String> b) {
-                        return a.get("name").compareToIgnoreCase(b.get("name"));
-                    }
-                });
+                Collections.sort(out, (a, b) ->
+                        a.get("name").compareToIgnoreCase(b.get("name")));
 
-                final List<Map<String, String>> finalOut = out;
                 runOnUiThread(() -> {
                     rows.clear();
-                    rows.addAll(finalOut);
-                    adapter.notifyDataSetChanged();
+                    rows.addAll(out);
+                    filter("");
                 });
 
             } catch (Exception e) {
@@ -121,7 +112,6 @@ public class NewChat extends AppCompatActivity {
             }
         }).start();
 
-        // filter
         search.addTextChangedListener(new TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
             @Override public void onTextChanged(CharSequence s, int st, int b, int c) { filter(s.toString()); }
@@ -129,21 +119,59 @@ public class NewChat extends AppCompatActivity {
         });
     }
 
-    private static void filterList(android.widget.SimpleAdapter adapter, ListView listView, List<Map<String,String>> src, String q) {
-        q = q.toLowerCase(Locale.US).trim();
-        List<Map<String, String>> filtered = new ArrayList<>();
-        for (Map<String, String> m : src) {
-            String name = m.get("name");
-            if (name != null && name.toLowerCase(Locale.US).contains(q)) filtered.add(m);
-        }
-        android.widget.SimpleAdapter newAdapter = new android.widget.SimpleAdapter(
-                listView.getContext(), filtered, R.layout.row_chat,
-                new String[]{"name", "snippet", "time"},
-                new int[]{R.id.name, R.id.snippet, R.id.time});
-        listView.setAdapter(newAdapter);
+    private void openChat(String name, String number, String uuid) {
+        startActivity(new android.content.Intent(NewChat.this, Chat.class)
+                .putExtra("peer_name",   name)
+                .putExtra("peer_number", number)
+                .putExtra("peer_uuid",   uuid));
+        finish();
+    }
+
+    /** GET /v1/search: is this number on Signal? Then open a thread with it. */
+    private void lookupNumber(String number) {
+        Toast.makeText(this, "Checking " + number + "…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            try {
+                String url = restBase + "/v1/search/" + URLEncoder.encode(myNumber, "UTF-8")
+                        + "?numbers=" + URLEncoder.encode(number, "UTF-8");
+                JSONArray res = new JSONArray(httpGet(url));
+                boolean registered = false;
+                for (int i = 0; i < res.length(); i++) {
+                    JSONObject r = res.optJSONObject(i);
+                    if (r != null && r.optBoolean("registered", false)) registered = true;
+                }
+                final boolean ok = registered;
+                runOnUiThread(() -> {
+                    if (ok) openChat(number, number, null);
+                    else Toast.makeText(this, number + " is not on Signal", Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() ->
+                        Toast.makeText(this, "Lookup failed", Toast.LENGTH_SHORT).show());
+            }
+        }).start();
     }
 
     private void filter(String q) {
-        filterList(adapter, (ListView) findViewById(R.id.list_people), rows, q);
+        String query = q.trim();
+        String ql = query.toLowerCase(Locale.US);
+        visible.clear();
+        for (Map<String, String> m : rows) {
+            String name = m.get("name");
+            if (name != null && name.toLowerCase(Locale.US).contains(ql)) visible.add(m);
+        }
+        // typed something number-shaped? offer a registration lookup
+        String d = digits(query);
+        if (d.length() >= 7) {
+            String e164 = query.startsWith("+") ? "+" + d : "+" + d;
+            Map<String, String> row = new HashMap<>();
+            row.put("name", "Message " + e164);
+            row.put("snippet", "Check if this number is on Signal");
+            row.put("time", "");
+            row.put("number", e164);
+            row.put("action", "lookup");
+            visible.add(0, row);
+        }
+        adapter.notifyDataSetChanged();
     }
 }

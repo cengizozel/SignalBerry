@@ -266,7 +266,7 @@ final class Repo {
         if (rd != null) {
             long targetTs = rd.optLong("timestamp", 0);
             if (targetTs > 0) {
-                synchronized (writeLock) { db.deleteByServerTs(peer, targetTs); }
+                synchronized (writeLock) { db.remoteDeleteByServerTs(peer, targetTs); }
                 notifyChanged(peer, targetTs);
             }
             return null;
@@ -286,6 +286,22 @@ final class Repo {
         }
 
         String text = safeOptString(msg, "message");
+        JSONArray mentions = msg.optJSONArray("mentions");
+        if (mentions != null && mentions.length() > 0 && text.indexOf('\uFFFC') >= 0) {
+            // bake mentions into readable text (cheapest Q10-safe rendering)
+            StringBuilder sb = new StringBuilder(text);
+            for (int i = mentions.length() - 1; i >= 0; i--) {
+                JSONObject men = mentions.optJSONObject(i);
+                if (men == null) continue;
+                int start = men.optInt("start", -1);
+                int len = men.optInt("length", 0);
+                if (start < 0 || start + len > sb.length()) continue;
+                String name = firstNonEmpty(men.optString("name", ""),
+                        men.optString("number", ""), "mention");
+                sb.replace(start, start + len, "@" + name);
+            }
+            text = sb.toString();
+        }
         JSONArray atts = msg.optJSONArray("attachments");
         JSONObject quote = msg.optJSONObject("quote");
         long quoteTs = quote != null ? quote.optLong("id", 0) : 0;
@@ -490,6 +506,28 @@ final class Repo {
         notifyChanged(peerKey, prevTs);
     }
 
+    /** Own remote-delete (app-originated): placeholder locally + tell the bridge
+     *  (no self-echo exists to carry it there). */
+    void remoteDeleteLocal(String peerKey, long serverTs) {
+        synchronized (writeLock) {
+            db.remoteDeleteByServerTs(peerKey, serverTs);
+        }
+        notifyChanged(peerKey, serverTs);
+        reportIo.execute(() -> {
+            try {
+                String base = prefs.getString("bridge", "");
+                if (isEmpty(base)) return;
+                JSONObject o = new JSONObject();
+                o.put("peer", peerKey);
+                o.put("server_ts", serverTs);
+                o.put("deleted", 1);
+                httpPostJson(base + "/v2/sent", o.toString());
+            } catch (Exception e) {
+                DebugLog.log("remote-delete report failed: " + e);
+            }
+        });
+    }
+
     void deleteLocal(String peerKey, java.util.Collection<Long> timestamps) {
         synchronized (writeLock) {
             db.deleteMessages(peerKey, timestamps);
@@ -651,7 +689,7 @@ final class Repo {
         boolean isText = "text".equals(kind);
         synchronized (writeLock) {
             if (row.optBoolean("deleted")) {
-                db.deleteByServerTs(peer, ts);
+                db.remoteDeleteByServerTs(peer, ts);
                 return peer;
             }
             // reconcile legs (§3.6 step 7): attachment first, then exact-text
