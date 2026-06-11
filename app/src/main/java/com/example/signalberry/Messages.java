@@ -415,23 +415,25 @@ public class Messages extends AppCompatActivity {
                 .setNegativeButton("Close", null)
                 .create();
 
-        addToggle(row1, "🌙", "Dark mode", "dark_mode", radius, primaryText, false, () -> {
+        // icons are BMP glyphs from Unicode 1.1 (1993) — guaranteed in every
+        // font incl. the BlackBerry's; modern emoji (🧪🧹) are tofu on BB10.
+        addToggle(row1, "☾", "Dark mode", "dark_mode", radius, primaryText, false, () -> {
             boolean d = prefs.getBoolean("dark_mode", false);
             reopenSettingsAt = System.currentTimeMillis();  // reopen after recreate
             AppCompatDelegate.setDefaultNightMode(d ? AppCompatDelegate.MODE_NIGHT_YES
                     : AppCompatDelegate.MODE_NIGHT_NO);
         });
         addToggle(row1, "✓✓", "Read receipts", "send_read_receipts", radius, primaryText, true, null);
-        addToggle(row2, "🧪", "Demo mode", "demo_mode", radius, primaryText, false, () -> {
+        addToggle(row2, "▶", "Demo mode", "demo_mode", radius, primaryText, false, () -> {
             adapter.setDemoMode(prefs.getBoolean("demo_mode", false));
             filter(search.getText().toString());
         });
-        addToggle(row2, "🐞", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
+        addToggle(row2, "≡", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
 
         root.addView(settingsDivider());
-        root.addView(actionRow("🧹  Purge message history", 0xFFFF9800, radius,
+        root.addView(actionRow("✕   Purge message history", 0xFFFF9800, radius,
                 () -> { dlg.dismiss(); doPurgeAll(); }));
-        root.addView(actionRow("⎋  Log out", 0xFFD32F2F, radius,
+        root.addView(actionRow("→   Log out", 0xFFD32F2F, radius,
                 () -> { dlg.dismiss(); doLogout(); }));
 
         dlg.show();
