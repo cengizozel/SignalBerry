@@ -202,7 +202,8 @@ public class Messages extends AppCompatActivity {
                             "Debug log: " + (dbgOn ? "ON ✓" : "OFF"),
                             "Dark mode: " + (darkOn ? "ON ✓" : "OFF"),
                             "Demo mode: " + (demoOn ? "ON ✓" : "OFF"),
-                            "Send read receipts: " + (rrOn ? "ON ✓" : "OFF")
+                            "Send read receipts: " + (rrOn ? "ON ✓" : "OFF"),
+                            "Purge message history…"
                     }, (dialog, which) -> {
                         if (which == 0) {
                             new AlertDialog.Builder(Messages.this)
@@ -238,6 +239,24 @@ public class Messages extends AppCompatActivity {
                             prefs.edit().putBoolean("demo_mode", newDemo).apply();
                             adapter.setDemoMode(newDemo);
                             filter(search.getText().toString());
+                        } else if (which == 5) {
+                            new AlertDialog.Builder(Messages.this)
+                                    .setTitle("Purge message history?")
+                                    .setMessage("Deletes ALL messages and media from this device "
+                                            + "and from the bridge server. You stay logged in. "
+                                            + "Your phone's Signal history is not affected.\n\n"
+                                            + "This cannot be undone.")
+                                    .setPositiveButton("Purge everything", (dd, ww) -> new Thread(() -> {
+                                        String err = repo.purgeAllData(Messages.this);
+                                        runOnUiThread(() -> {
+                                            Toast.makeText(Messages.this,
+                                                    err == null ? "All message data purged" : err,
+                                                    Toast.LENGTH_LONG).show();
+                                            rebuildListFromDb();
+                                        });
+                                    }).start())
+                                    .setNegativeButton("Cancel", null)
+                                    .show();
                         } else {
                             boolean newRr = !prefs.getBoolean("send_read_receipts", false);
                             if (newRr) {

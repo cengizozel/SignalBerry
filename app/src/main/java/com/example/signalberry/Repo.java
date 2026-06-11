@@ -46,6 +46,43 @@ final class Repo {
         return instance;
     }
 
+    /** Purge all message data: bridge first (abort everything if that fails),
+     *  then the local DB, attachment store, and per-peer watermarks. Login,
+     *  contacts, and settings survive; the phone's history is never touched.
+     *  Runs blocking — call off the main thread. @return null on success,
+     *  else a short error message. */
+    String purgeAllData(Context ctx) {
+        try {
+            String base = prefs.getString("bridge", "");
+            if (isEmpty(base)) return "No bridge configured";
+            int code = httpPostJson(base + "/v2/purge", "{\"confirm\":\"purge\"}");
+            if (code < 200 || code >= 300) return "Bridge purge failed (" + code + ")";
+        } catch (Exception e) {
+            return "Bridge unreachable — nothing deleted";
+        }
+        synchronized (writeLock) {
+            db.getWritableDatabase().execSQL("DELETE FROM messages");
+        }
+        java.io.File att = new java.io.File(ctx.getFilesDir(), "att");
+        java.io.File[] files = att.listFiles();
+        if (files != null) for (java.io.File f : files) //noinspection ResultOfMethodCallIgnored
+            f.delete();
+        SharedPreferences.Editor ed = prefs.edit();
+        for (String k : prefs.getAll().keySet())
+            if (k.startsWith("read_ts_") || k.startsWith("notified_ts_")
+                    || k.startsWith("receipted_ts_") || k.startsWith("thread_cleared_ts_")
+                    || k.startsWith("notif_count_"))
+                ed.remove(k);
+        // cursor back to 0 is safe: the bridge preserves its mod_seq counter
+        ed.putLong("bridge_seq", 0).putBoolean("reconcile_done", true).apply();
+        android.app.NotificationManager nm = (android.app.NotificationManager)
+                ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.cancelAll();
+        main.post(() -> { synchronized (listeners) {
+            for (Listener l : listeners) l.onItemInserted(""); } });
+        return null;
+    }
+
     /** Logout: drop the singleton so re-login gets a fresh DB handle/identity. */
     static synchronized void reset() {
         if (instance != null) {
