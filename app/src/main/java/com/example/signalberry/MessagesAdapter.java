@@ -89,6 +89,16 @@ class MessagesAdapter extends BaseAdapter {
         }
 
         int sizePx = dpToPx(44);
+        if ("1".equals(item.get("is_group"))) {
+            Bitmap grp = BIND_CACHE.get("groupav|" + sizePx);
+            if (grp == null) {
+                grp = groupCircle(sizePx);
+                BIND_CACHE.put("groupav|" + sizePx, grp);
+            }
+            ivAvatar.setImageBitmap(grp);
+            ivAvatar.setTag("groupav");
+            return convertView;
+        }
         if ("1".equals(item.get("is_self"))) {
             Bitmap note = BIND_CACHE.get("noteself|" + sizePx);
             if (note == null) {
@@ -166,6 +176,29 @@ class MessagesAdapter extends BaseAdapter {
             float y = t + (b - t) * i / 4f;
             c.drawLine(l + inset, y, r - inset, y, line);
         }
+        return bm;
+    }
+
+    /** Group avatar: two-person silhouette drawn in code (no glyph risk). */
+    static Bitmap groupCircle(int size) {
+        Bitmap bm = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(bm);
+        Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        fill.setColor(0xFF7E57C2); // purple: distinct from contacts + Note to Self
+        c.drawCircle(size / 2f, size / 2f, size / 2f, fill);
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setColor(Color.WHITE);
+        // back person (smaller, offset right)
+        c.drawCircle(size * 0.62f, size * 0.40f, size * 0.105f, p);
+        c.drawOval(new android.graphics.RectF(size * 0.48f, size * 0.52f,
+                size * 0.78f, size * 0.80f), p);
+        // front person
+        p.setColor(0xFF7E57C2);
+        c.drawCircle(size * 0.40f, size * 0.42f, size * 0.155f, p);
+        p.setColor(Color.WHITE);
+        c.drawCircle(size * 0.40f, size * 0.42f, size * 0.125f, p);
+        c.drawOval(new android.graphics.RectF(size * 0.22f, size * 0.56f,
+                size * 0.58f, size * 0.88f), p);
         return bm;
     }
 

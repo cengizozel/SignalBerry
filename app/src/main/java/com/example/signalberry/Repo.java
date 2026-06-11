@@ -289,25 +289,31 @@ final class Repo {
         JSONObject typing = env.optJSONObject("typingMessage");
 
         if (data != null) {
-            if (data.has("groupInfo") && data.optJSONObject("groupInfo") != null) return null;
-            String peer = peerKeys.resolve(srcNum, srcUuid);
+            JSONObject gi = data.optJSONObject("groupInfo");
+            String gid = gi != null ? gi.optString("groupId", "") : "";
+            if (gi != null && isEmpty(gid)) return null;
+            String sender = peerKeys.resolve(srcNum, srcUuid);
+            String peer = notEmpty(gid) ? "group:" + gid : sender;
             if (isEmpty(peer)) return null;
-            return ingestDataMessage(peer, "in", data, envTs, /*selfAuthored*/ false);
+            return ingestDataMessage(peer, "in", data, envTs, /*selfAuthored*/ false,
+                    notEmpty(gid) ? sender : "");
         }
 
         if (sync != null) {
             JSONObject sent = sync.optJSONObject("sentMessage");
             if (sent != null) {
-                if (sent.has("groupInfo") && sent.optJSONObject("groupInfo") != null) return null;
+                JSONObject sgi = sent.optJSONObject("groupInfo");
+                String sgid = sgi != null ? sgi.optString("groupId", "") : "";
+                if (sgi != null && isEmpty(sgid)) return null;
                 String destNum  = firstNonEmpty(safeOptString(sent, "destinationNumber"),
                                                 safeOptString(sent, "destination"));
                 String destUuid = safeOptString(sent, "destinationUuid");
                 if (notEmpty(destNum) && notEmpty(destUuid)) peerKeys.learn(destUuid, destNum);
-                String peer = peerKeys.resolve(destNum, destUuid);
+                String peer = notEmpty(sgid) ? "group:" + sgid : peerKeys.resolve(destNum, destUuid);
                 if (isEmpty(peer)) return null;
                 long sentTs = sent.optLong("timestamp", envTs);
                 if (sentTs <= 0) return null;
-                return ingestDataMessage(peer, "out", sent, sentTs, true);
+                return ingestDataMessage(peer, "out", sent, sentTs, true, "");
             }
             JSONArray readMsgs = sync.optJSONArray("readMessages");
             if (readMsgs != null && readMsgs.length() > 0) {
@@ -356,6 +362,8 @@ final class Repo {
 
         if (typing != null) {
             String peer = peerKeys.resolve(srcNum, srcUuid);
+            String tgid = typing.optString("groupId", "");
+            if (notEmpty(tgid)) peer = "group:" + tgid;
             if (notEmpty(peer))
                 notifyEphemeral(peer, "STARTED".equals(typing.optString("action"))
                         ? "typing_started" : "typing_stopped");
@@ -367,11 +375,19 @@ final class Repo {
     /** Shared shaping for dataMessage and syncMessage.sentMessage. */
     private IngestResult ingestDataMessage(String peer, String dir, JSONObject msg,
                                            long ts, boolean selfAuthored) throws Exception {
-        // reaction? ("me"/"peer" keys — 1:1 chats only; matches ChatAdapter)
+        return ingestDataMessage(peer, dir, msg, ts, selfAuthored, "");
+    }
+
+    private IngestResult ingestDataMessage(String peer, String dir, JSONObject msg,
+                                           long ts, boolean selfAuthored,
+                                           String author) throws Exception {
+        // reaction? ("me"/"peer" in 1:1 chats; "peer:<sender>" in groups so
+        // multiple members' reactions don't clobber each other
         JSONObject reaction = msg.optJSONObject("reaction");
         if (reaction != null) {
             long targetTs = reaction.optLong("targetSentTimestamp", 0);
-            String reactorKey = selfAuthored ? "me" : "peer";
+            String reactorKey = selfAuthored ? "me"
+                    : notEmpty(author) ? "peer:" + author : "peer";
             synchronized (writeLock) {
                 db.updateReaction(peer, targetTs, reactorKey,
                         reaction.optString("emoji", ""), reaction.optBoolean("isRemove"));
@@ -452,14 +468,14 @@ final class Repo {
                     if (!adopted) {
                         long id = db.upsertByIdentity(peer, dir, kindFromMime(mime),
                                 "", attId, mime, first ? emptyToNull(text) : null, null,
-                                ts, status, quoteTs, quoteText, quoteAuthor);
+                                ts, status, quoteTs, quoteText, quoteAuthor, author);
                         inserted |= id != -1;
                     }
                     first = false;
                 }
             } else if (notEmpty(text)) {
                 long id = db.upsertByIdentity(peer, dir, "text", text, "", "", null, null,
-                        ts, status, quoteTs, quoteText, quoteAuthor);
+                        ts, status, quoteTs, quoteText, quoteAuthor, author);
                 inserted = id != -1;
             } else {
                 return null; // nothing visible (e.g. expiration-timer update)
@@ -666,6 +682,7 @@ final class Repo {
      *  Signal account has read receipts disabled), never for the self-thread.
      *  Tracks a per-peer high-water mark so each ts is receipted once. */
     void queueReadReceipts(String peerKey, String recipient, List<MessageItem> thread) {
+        if (peerKey != null && peerKey.startsWith("group:")) return;
         if (!prefs.getBoolean("send_read_receipts", false)) return;
         if (isEmpty(recipient) || isEmpty(peerKey)) return;
         if (peerKey.equals(selfNumber) || PeerKeys.normalize(recipient).equals(selfNumber)) return;
@@ -942,7 +959,8 @@ final class Repo {
             db.upsertByIdentity(peer, dir, kind,
                     isText ? body : "", attId, mime,
                     isText ? null : emptyToNull(body), null,
-                    ts, status, quoteTs, quoteText, quoteAuthor);
+                    ts, status, quoteTs, quoteText, quoteAuthor,
+                    row.optString("author", ""));
             long editedTs = row.optLong("editedTs", 0);
             if (editedTs > 0 && isText) {
                 // idempotent: skip if this edit was already applied

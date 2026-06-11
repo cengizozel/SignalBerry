@@ -120,7 +120,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     static class PeerTextVH extends RecyclerView.ViewHolder {
         final LinearLayout quoteBlock;
         final View quoteLine;
-        final TextView tvQuote, tvMessage, tvReactions, tvTime;
+        final TextView tvQuote, tvMessage, tvReactions, tvTime, tvSender;
         PeerTextVH(@NonNull View v) {
             super(v);
             quoteBlock  = v.findViewById(R.id.quoteBlock);
@@ -129,8 +129,10 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvMessage   = v.findViewById(R.id.tvMessage);
             tvReactions = v.findViewById(R.id.tvReactions);
             tvTime      = v.findViewById(R.id.tvTime);
+            tvSender    = v.findViewById(R.id.tvSender);
         }
         void bind(MessageItem m) {
+            bindSender(m, tvSender);
             bindPeerTime(m, tvTime);
             if (m.status == Chat.ST_REMOTE_DELETED) { bindDeleted(tvMessage, quoteBlock, tvReactions); return; }
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
@@ -188,7 +190,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     class AudioVH extends RecyclerView.ViewHolder {
         final LinearLayout quoteBlock;
         final View quoteLine, playerRow;
-        final TextView tvQuote, tvDur, tvSpeed, tvStamp, tvReactions;
+        final TextView tvQuote, tvDur, tvSpeed, tvStamp, tvReactions, tvSender;
         final ImageView btnPlay;
         final WaveformView wave;
         final boolean me;
@@ -206,6 +208,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvSpeed     = v.findViewById(R.id.tvSpeed);
             tvStamp     = v.findViewById(R.id.tvStamp);
             tvReactions = v.findViewById(R.id.tvReactions);
+            tvSender    = v.findViewById(R.id.tvSender);
             // the me-bubble flips light-blue (light) / dark-blue (night), so
             // the transport colors must flip with it or they wash out
             boolean night = (v.getResources().getConfiguration().uiMode
@@ -260,6 +263,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                 tvReactions.setVisibility(View.GONE);
                 return;
             }
+            bindSender(m, tvSender);
             tvDur.setTypeface(null, android.graphics.Typeface.NORMAL);
             playerRow.setVisibility(View.VISIBLE);
             boolean active = ui != null && ui.isActive(m);
@@ -301,9 +305,12 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvCaption   = v.findViewById(R.id.tvCaption);
             tvReactions = v.findViewById(R.id.tvReactions);
             tvTime      = v.findViewById(R.id.tvTime);
+            tvSender    = v.findViewById(R.id.tvSender);
         }
         final TextView tvTime;
+        final TextView tvSender;
         void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
+            bindSender(m, tvSender);
             bindPeerTime(m, tvTime);
             bindMedia(m, loader, base, pos, l, iv, ivPlay, tvMeta);
             if (m.caption != null && !m.caption.isEmpty()) {
@@ -455,6 +462,22 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             case Chat.ST_FAILED:    tv.setText("\u2715 failed \u2014 tap to retry"); tv.setTextColor(0xFFD32F2F); break;
             default:                tv.setText(at.trim());
         }
+    }
+
+    private static final int[] SENDER_PALETTE = {
+        0xFF1E88E5, 0xFF43A047, 0xFF8E24AA, 0xFF00ACC1,
+        0xFFD81B60, 0xFF5E35B1, 0xFF00897B, 0xFFF4511E
+    };
+
+    private static void bindSender(MessageItem m, TextView tv) {
+        if (tv == null) return;
+        if (m.authorName == null || m.authorName.isEmpty()) {
+            tv.setVisibility(View.GONE);
+            return;
+        }
+        tv.setText(m.authorName);
+        tv.setTextColor(SENDER_PALETTE[Math.abs(m.authorName.hashCode() % SENDER_PALETTE.length)]);
+        tv.setVisibility(View.VISIBLE);
     }
 
     private static void bindPeerTime(MessageItem m, TextView tv) {

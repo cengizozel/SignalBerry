@@ -11,6 +11,13 @@
         android:background="@drawable/bg_bubble_peer"
         android:orientation="vertical">
 
+        <TextView
+            android:id="@+id/tvSender"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textStyle="bold"
+            android:paddingBottom="2dp"
+            android:visibility="gone"/>
+
         <LinearLayout
             android:id="@+id/quoteBlock"
             android:layout_width="match_parent" android:layout_height="wrap_content"

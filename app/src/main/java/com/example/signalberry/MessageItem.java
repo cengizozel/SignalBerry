@@ -25,6 +25,8 @@ class MessageItem {
     String msgType = "text"; // text|image|video|audio|file (media rows share TYPE_IMAGE rendering for now)
     long clientNonce;   // non-zero on rows born from a local send
     String peerKey;     // set only where the caller needs cross-thread context (e.g. report queue)
+    String author = "";     // group threads: sender peer key of incoming rows
+    String authorName;      // display name (resolved by Chat before render)
 
     /** Display timestamp: pendings sort at their send moment. */
     long displayTs() { return serverTs < 0 ? (clientNonce > 0 ? clientNonce >> 8 : -serverTs >> 8) : serverTs; }

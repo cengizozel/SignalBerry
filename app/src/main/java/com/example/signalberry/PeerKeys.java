@@ -63,6 +63,7 @@ final class PeerKeys {
     static String normalize(String numberOrUuid) {
         if (isEmpty(numberOrUuid)) return "";
         String s = numberOrUuid.trim();
+        if (s.startsWith("group:")) return s; // base64 group id: case-significant
         if (UUID_RE.matcher(s).matches()) return s.toLowerCase(Locale.US);
         // service-id forms like "PNI:<uuid>" (sent after a contact changes
         // phones / re-registers) must key as the uuid — extracting digits from
@@ -82,6 +83,8 @@ final class PeerKeys {
      * through the learned map when possible, else used as-is (lowercase).
      */
     synchronized String resolve(String number, String uuid) {
+        if (!isEmpty(number) && number.startsWith("group:")) return number;
+        if (!isEmpty(uuid) && uuid.startsWith("group:")) return uuid;
         // a uuid smuggled into the number slot must not be digit-stripped
         if (!isEmpty(number) && UUID_SEARCH.matcher(number).find())
             return normalize(number);

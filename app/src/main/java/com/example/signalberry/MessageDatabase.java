@@ -33,7 +33,7 @@ import static com.example.signalberry.Utils.*;
 class MessageDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME    = "signalberry.db";
-    private static final int    DB_VERSION = 7;
+    private static final int    DB_VERSION = 8;
     private static final String T          = "messages";
 
     // status values
@@ -71,7 +71,8 @@ class MessageDatabase extends SQLiteOpenHelper {
                 "client_nonce INTEGER NOT NULL DEFAULT 0," +
                 "reported     INTEGER NOT NULL DEFAULT 1," + // only app-confirmed sends start at 0
                 "expire_s     INTEGER NOT NULL DEFAULT 0," + // disappearing-message timer
-                "expire_at    INTEGER NOT NULL DEFAULT 0" +  // armed deadline (0 = not armed)
+                "expire_at    INTEGER NOT NULL DEFAULT 0," + // armed deadline (0 = not armed)
+                "author       TEXT    NOT NULL DEFAULT ''" + // group threads: sender of in-rows
                 ")");
         db.execSQL("CREATE INDEX idx_peer_ts ON " + T + "(peer_key, server_ts)");
         createIdentityIndex(db);
@@ -92,6 +93,7 @@ class MessageDatabase extends SQLiteOpenHelper {
             db.execSQL("ALTER TABLE " + T + " ADD COLUMN expire_s INTEGER NOT NULL DEFAULT 0");
             db.execSQL("ALTER TABLE " + T + " ADD COLUMN expire_at INTEGER NOT NULL DEFAULT 0");
         }
+        if (old < 8) db.execSQL("ALTER TABLE " + T + " ADD COLUMN author TEXT NOT NULL DEFAULT ''");
     }
 
     /** v5→v6: REDESIGN.md §3.6 steps 1-6 (step 7, the bridge reconcile, runs in
@@ -240,8 +242,17 @@ class MessageDatabase extends SQLiteOpenHelper {
                           String attId, String mime, String caption, String localUri,
                           long serverTs, int status,
                           long quoteTs, String quoteText, String quoteAuthor) {
+        return upsertByIdentity(peerKey, dir, msgType, text, attId, mime, caption,
+                localUri, serverTs, status, quoteTs, quoteText, quoteAuthor, "");
+    }
+
+    long upsertByIdentity(String peerKey, String dir, String msgType, String text,
+                          String attId, String mime, String caption, String localUri,
+                          long serverTs, int status,
+                          long quoteTs, String quoteText, String quoteAuthor, String author) {
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
+        v.put("author", author == null ? "" : author);
         v.put("peer_key", peerKey);
         v.put("dir", dir);
         v.put("msg_type", msgType);
@@ -747,6 +758,11 @@ class MessageDatabase extends SQLiteOpenHelper {
         item.quoteAuthor = isEmpty(qa) ? null : qa;
         int qtsIdx = c.getColumnIndex("quote_ts");
         if (qtsIdx >= 0) item.quoteTs = c.getLong(qtsIdx);
+        int authIdx = c.getColumnIndex("author");
+        if (authIdx >= 0) {
+            String a = c.getString(authIdx);
+            item.author = a == null ? "" : a;
+        }
         int nonceIdx = c.getColumnIndex("client_nonce");
         if (nonceIdx >= 0) item.clientNonce = c.getLong(nonceIdx);
         int ri = c.getColumnIndex("reactions");

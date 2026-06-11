@@ -108,7 +108,8 @@ public class Messages extends AppCompatActivity {
             String peerUuid   = item.get("uuid");
 
             if ((peerNumber == null || peerNumber.trim().isEmpty()) &&
-                    (peerUuid   == null || peerUuid.trim().isEmpty())) {
+                    (peerUuid   == null || peerUuid.trim().isEmpty()) &&
+                    (item.get("group_key") == null || item.get("group_key").isEmpty())) {
                 Toast.makeText(this, "No identifier for this contact", Toast.LENGTH_SHORT).show();
                 return;
             }
@@ -117,7 +118,8 @@ public class Messages extends AppCompatActivity {
             android.content.Intent intent = new android.content.Intent(Messages.this, Chat.class)
                     .putExtra("peer_name",   demoOn ? DemoData.NAMES[position % DemoData.NAMES.length] : peerName)
                     .putExtra("peer_number", peerNumber)
-                    .putExtra("peer_uuid",   peerUuid);
+                    .putExtra("peer_uuid",   peerUuid)
+                    .putExtra("peer_group",  item.get("group_key"));
             if (demoOn) intent.putExtra("demo_index", position);
             startActivity(intent);
         });
@@ -325,6 +327,26 @@ public class Messages extends AppCompatActivity {
                 }
                 ed.apply();
 
+                // groups: names + send tokens, keyed group:<internal_id>
+                try {
+                    JSONArray groups = new JSONArray(httpGet(restBase + "/v1/groups/"
+                            + java.net.URLEncoder.encode(myNumber, "UTF-8")));
+                    SharedPreferences.Editor ge = prefs.edit();
+                    for (int i = 0; i < groups.length(); i++) {
+                        JSONObject g = groups.getJSONObject(i);
+                        String gid = g.optString("internal_id", "");
+                        if (isEmpty(gid)) continue;
+                        String gkey = "group:" + gid;
+                        String gname = g.optString("name", "");
+                        if (notEmpty(gname)) {
+                            synchronized (nameByPeerKey) { nameByPeerKey.put(gkey, gname); }
+                            ge.putString("contact_name_" + gkey, gname);
+                        }
+                        ge.putString("group_sendid_" + gkey, g.optString("id", ""));
+                    }
+                    ge.apply();
+                } catch (Exception ignored) {} // group fetch failure must not block DMs
+
                 // one global catch-up replaces the per-contact bridge N+1
                 repo.catchUp();
 
@@ -357,7 +379,8 @@ public class Messages extends AppCompatActivity {
                 String name = prefs.getString("alias_" + key, "");
                 if (isEmpty(name) && isSelf) name = "Note to Self";
                 if (isEmpty(name)) synchronized (nameByPeerKey) { name = nameByPeerKey.get(key); }
-                if (isEmpty(name)) name = prefs.getString("contact_name_" + key, key);
+                if (isEmpty(name)) name = prefs.getString("contact_name_" + key,
+                        key.startsWith("group:") ? "Unnamed group" : key);
                 String num    = prefs.getString("contact_num_" + key, "");
                 String uuid   = prefs.getString("contact_uuid_" + key, "");
                 String avatar = prefs.getString("contact_avatar_" + key, "");
@@ -372,7 +395,39 @@ public class Messages extends AppCompatActivity {
                 row.put("uuid",        uuid);
                 row.put("avatar_path", isSelf ? "" : avatar);
                 if (isSelf) row.put("is_self", "1");
+                if (key.startsWith("group:")) {
+                    row.put("is_group", "1");
+                    row.put("group_key", key);
+                }
                 row.put("unread",      String.valueOf(unread));
+                rows.add(row);
+            }
+
+            // groups are always listed, even before their first stored message —
+            // otherwise an empty group thread is unreachable from the UI
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (Map<String, String> r : rows) {
+                String gk = r.get("group_key");
+                if (gk != null) seen.add(gk);
+            }
+            for (String prefKey : prefs.getAll().keySet()) {
+                if (!prefKey.startsWith("group_sendid_group:")) continue;
+                String gkey = prefKey.substring("group_sendid_".length());
+                if (seen.contains(gkey)) continue;
+                Map<String, String> row = new HashMap<>();
+                String gname = prefs.getString("alias_" + gkey, "");
+                if (isEmpty(gname)) gname = prefs.getString("contact_name_" + gkey, "");
+                if (isEmpty(gname)) gname = "Unnamed group";
+                row.put("name", gname);
+                row.put("snippet", "");
+                row.put("time", "");
+                row.put("ts", "0");
+                row.put("number", "");
+                row.put("uuid", "");
+                row.put("unread", "0");
+                row.put("avatar_path", "");
+                row.put("is_group", "1");
+                row.put("group_key", gkey);
                 rows.add(row);
             }
             runOnUiThread(() -> {

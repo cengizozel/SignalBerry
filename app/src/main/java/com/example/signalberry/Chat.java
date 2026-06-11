@@ -52,6 +52,9 @@ public class Chat extends AppCompatActivity {
     private boolean demoMode;
     private int demoIndex = -1;
     private String chatDbKey;
+    private boolean isGroup;
+    private String sendRecipient;   // number/uuid for DMs, "group.<token>" for groups
+    private final java.util.Map<String, String> authorNames = new java.util.HashMap<>();
 
     // Reply state
     private MessageItem replyToItem = null;
@@ -115,13 +118,14 @@ public class Chat extends AppCompatActivity {
             reloadQueued = false;
             new Thread(() -> {
                 final List<MessageItem> fresh = repo.getThread(chatDbKey);
+                resolveAuthors(fresh);
                 runOnUiThread(() -> {
                     rawItems.clear();
                     rawItems.addAll(fresh);
                     rebuildDisplay();
                     advanceReadWatermark();
                     repo.queueReadReceipts(chatDbKey,
-                            notEmpty(peerNumber) ? peerNumber : peerUuid, rawItems);
+                            sendRecipient, rawItems);
                 });
             }).start();
         }
@@ -169,14 +173,22 @@ public class Chat extends AppCompatActivity {
         if (peerName == null || peerName.isEmpty())
             peerName = notEmpty(peerNumber) ? peerNumber : notEmpty(peerUuid) ? peerUuid : "Chat";
 
-        if (!notEmpty(ipPref) || !notEmpty(myNumber) || (!notEmpty(peerNumber) && !notEmpty(peerUuid))) {
+        String groupKey = getIntent().getStringExtra("peer_group");
+        isGroup = notEmpty(groupKey);
+        if (!notEmpty(ipPref) || !notEmpty(myNumber)
+                || (!isGroup && !notEmpty(peerNumber) && !notEmpty(peerUuid))) {
             Toast.makeText(this, "Missing server IP / my number / peer id", Toast.LENGTH_LONG).show();
             finish();
             return;
         }
 
         baseSignal = normalizeBase(ipPref);
-        chatDbKey = PeerKeys.get(this).resolve(peerNumber, peerUuid);
+        chatDbKey = isGroup ? groupKey : PeerKeys.get(this).resolve(peerNumber, peerUuid);
+        // group send token = "group." + base64(internal id) — derivable, no lookup
+        sendRecipient = isGroup
+                ? "group." + android.util.Base64.encodeToString(
+                        groupKey.substring("group:".length()).getBytes(), android.util.Base64.NO_WRAP)
+                : (sendRecipient);
         openReadTs = prefs.getLong("read_ts_" + chatDbKey, 0);
         // self thread is "Note to Self"; a local alias overrides everything
         if (notEmpty(myNumber) && chatDbKey.equals(digits(myNumber))) peerName = "Note to Self";
@@ -287,6 +299,7 @@ public class Chat extends AppCompatActivity {
             chatSearchInput.requestFocus();
             new Thread(() -> { // search needs the WHOLE history, not the 300-row page
                 final List<MessageItem> full = repo.getThreadFull(chatDbKey);
+                resolveAuthors(full);
                 runOnUiThread(() -> {
                     rawItems.clear();
                     rawItems.addAll(full);
@@ -516,7 +529,7 @@ public class Chat extends AppCompatActivity {
                         + "identity to keep messaging?")
                 .setPositiveButton("Trust", (d, w) -> new Thread(() -> {
                     try {
-                        String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+                        String peer = sendRecipient;
                         JSONObject body = new JSONObject();
                         body.put("trust_all_known_keys", true);
                         int code = httpPutJson(baseSignal + "/v1/identities/"
@@ -563,7 +576,7 @@ public class Chat extends AppCompatActivity {
         final String mime = isEmpty(failed.mime) ? "application/octet-stream" : failed.mime;
         final String kind = failed.msgType;
         final String cap  = failed.caption;
-        final String recipient = notEmpty(peerNumber) ? peerNumber : peerUuid;
+        final String recipient = sendRecipient;
         final java.io.File f = new java.io.File(path.startsWith("file://") ? path.substring(7) : path);
         if (!f.exists()) { Toast.makeText(this, "Original file no longer available", Toast.LENGTH_SHORT).show(); return; }
         final long nonce = repo.beginSend(chatDbKey, kind, null, mime, cap, path, 0, null, null);
@@ -589,12 +602,12 @@ public class Chat extends AppCompatActivity {
             body.put("message", text);
             body.put("number", myNumber);
             JSONArray rcpts = new JSONArray();
-            if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
+            rcpts.put(sendRecipient);
             body.put("recipients", rcpts);
             if (replyTo != null && replyTs > 0) {
                 body.put("quote_timestamp", replyTs);
                 String qAuthor = "me".equals(replyTo.from) ? myNumber
-                        : (notEmpty(peerNumber) ? peerNumber : peerUuid);
+                        : (sendRecipient);
                 body.put("quote_author", qAuthor == null ? "" : qAuthor);
                 String qText = replyTo.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
                         : (replyTo.text != null ? replyTo.text : "");
@@ -660,7 +673,7 @@ public class Chat extends AppCompatActivity {
         final String mime = (mimeRaw != null) ? mimeRaw : "application/octet-stream";
         final String kind = Repo.kindFromMime(mime);
         final String cap  = caption.isEmpty() ? null : caption;
-        final String recipient = notEmpty(peerNumber) ? peerNumber : peerUuid;
+        final String recipient = sendRecipient;
 
         new Thread(() -> {
             // 1. copy into the store FIRST — content:// permissions die with the
@@ -680,7 +693,7 @@ public class Chat extends AppCompatActivity {
     /** Send an attachment already copied into the store. Blocking — call off
      *  the main thread. Shared by the media picker and voice recording. */
     private void sendStoredFile(java.io.File stored, String mime, String kind, String caption) {
-        final String recipient = notEmpty(peerNumber) ? peerNumber : peerUuid;
+        final String recipient = sendRecipient;
         long cap_bytes = "image".equals(kind)
                 ? AttachmentStore.MAX_IMAGE_BYTES : AttachmentStore.MAX_MEDIA_BYTES;
         if (stored.length() > cap_bytes) {
@@ -866,10 +879,33 @@ public class Chat extends AppCompatActivity {
 
     /** Peer avatar in the title bar: photo if the contact has one, initials
      *  otherwise, notepad for Note to Self. Same cache as the chat list. */
+    /** Group bubbles need "who said this": map author keys to display names. */
+    private void resolveAuthors(List<MessageItem> items) {
+        if (!isGroup) return;
+        for (MessageItem it : items) {
+            if (isEmpty(it.author) || !"peer".equals(it.from)) continue;
+            String name = authorNames.get(it.author);
+            if (name == null) {
+                name = prefs.getString("alias_" + it.author, "");
+                if (isEmpty(name)) name = prefs.getString("contact_name_" + it.author, "");
+                if (isEmpty(name)) {
+                    // uuid-keyed stranger: show a short stable handle
+                    name = it.author.length() > 8 ? it.author.substring(0, 8) : it.author;
+                }
+                authorNames.put(it.author, name);
+            }
+            it.authorName = name;
+        }
+    }
+
     private void loadChatAvatar() {
         final android.widget.ImageView iv = findViewById(R.id.iv_chat_avatar);
         if (iv == null) return;
         final int size = (int) (30 * getResources().getDisplayMetrics().density + 0.5f);
+        if (isGroup) {
+            iv.setImageBitmap(MessagesAdapter.groupCircle(size));
+            return;
+        }
         if (notEmpty(myNumber) && chatDbKey.equals(digits(myNumber))) {
             iv.setImageBitmap(MessagesAdapter.noteToSelfCircle(size));
             return;
@@ -1075,8 +1111,9 @@ public class Chat extends AppCompatActivity {
 
     // -------------------- TYPING INDICATORS --------------------
     private void sendTypingStart() {
+        if (isGroup) return;
         try {
-            String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+            String peer = sendRecipient;
             if (peer == null) return;
             JSONObject body = new JSONObject();
             body.put("recipient", peer);
@@ -1085,8 +1122,9 @@ public class Chat extends AppCompatActivity {
     }
 
     private void sendTypingStop() {
+        if (isGroup) return;
         try {
-            String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+            String peer = sendRecipient;
             if (peer == null) return;
             JSONObject body = new JSONObject();
             body.put("recipient", peer);
@@ -1523,7 +1561,7 @@ public class Chat extends AppCompatActivity {
                 body.put("message", newText);
                 body.put("number", myNumber);
                 JSONArray rcpts = new JSONArray();
-                if (notEmpty(peerNumber)) rcpts.put(peerNumber); else rcpts.put(peerUuid);
+                rcpts.put(sendRecipient);
                 body.put("recipients", rcpts);
                 long editTs = original.lastEditTs > 0 ? original.lastEditTs : original.serverTs;
                 body.put("edit_timestamp", editTs);
@@ -1547,7 +1585,7 @@ public class Chat extends AppCompatActivity {
                 .setMessage("Delete this message for everyone?")
                 .setPositiveButton("Delete", (d, w) -> new Thread(() -> {
                     try {
-                        String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+                        String peer = sendRecipient;
                         JSONObject body = new JSONObject();
                         body.put("recipient", peer);
                         body.put("timestamp", m.serverTs);
@@ -1628,7 +1666,7 @@ public class Chat extends AppCompatActivity {
         repo.sendLocalReaction(chatDbKey, target.serverTs, emoji, isRemove);
         new Thread(() -> {
             try {
-                String peer = notEmpty(peerNumber) ? peerNumber : peerUuid;
+                String peer = sendRecipient;
                 String targetAuthor = "me".equals(target.from)
                         ? (notEmpty(myNumber) ? myNumber : peer) : peer;
                 JSONObject body = new JSONObject();

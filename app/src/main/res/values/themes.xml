@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="alertDialogTheme">@style/SBDialog</item>
+        <item name="dialogTheme">@style/SBDialog</item>
+    </style>
+    <!-- on API 18 the default dialog window background renders as a thick
+         dark frame in light mode — give it a clean rounded surface -->
+    <style name="SBDialog" parent="Theme.AppCompat.DayNight.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/bg_dialog</item>
+    </style>
+</resources>
