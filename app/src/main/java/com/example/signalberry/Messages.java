@@ -419,6 +419,10 @@ public class Messages extends AppCompatActivity {
         // (🌙🐞) but not 2018-era emoji (🧪🧹) nor obscure BMP symbols (⎋☾).
         addToggle(row1, "🌙", "Dark mode", "dark_mode", radius, primaryText, false, () -> {
             boolean d = prefs.getBoolean("dark_mode", false);
+            // dismiss BEFORE the theme switch — the recreate doesn't reliably
+            // tear down an open dialog window, leaving an old-theme zombie
+            // stacked under the reopened one
+            dlg.dismiss();
             reopenSettingsAt = System.currentTimeMillis();  // reopen after recreate
             AppCompatDelegate.setDefaultNightMode(d ? AppCompatDelegate.MODE_NIGHT_YES
                     : AppCompatDelegate.MODE_NIGHT_NO);
