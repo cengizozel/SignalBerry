@@ -415,6 +415,7 @@ public class Chat extends AppCompatActivity {
         handler.removeCallbacks(reloadRun);
         reloadQueued = false;
         if (typingSent) { typingSent = false; new Thread(this::sendTypingStop).start(); }
+        if (audioPlayer != null) { audioPlayer.release(); audioPlayer = null; }
         if (!demoMode) repo.removeListener(repoListener);
         advanceReadWatermark();
         prefs.edit().remove("open_chat_peer").apply();
@@ -730,10 +731,39 @@ public class Chat extends AppCompatActivity {
                     view.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
                     startActivity(view);
                 } catch (Exception e) {
-                    Toast.makeText(this, "No app can open this file", Toast.LENGTH_SHORT).show();
+                    if (mime.startsWith("audio/")) playAudioInline(f);
+                    else Toast.makeText(this, "No app can open this file", Toast.LENGTH_SHORT).show();
                 }
             });
         }).start();
+    }
+
+    private android.media.MediaPlayer audioPlayer;
+
+    /** Voice notes must play even with no system audio app: tap toggles. */
+    private void playAudioInline(java.io.File f) {
+        try {
+            if (audioPlayer != null) {
+                audioPlayer.release();
+                audioPlayer = null;
+                Toast.makeText(this, "Stopped", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            audioPlayer = new android.media.MediaPlayer();
+            java.io.FileInputStream fis = new java.io.FileInputStream(f);
+            audioPlayer.setDataSource(fis.getFD());
+            fis.close();
+            audioPlayer.setOnCompletionListener(mp -> {
+                mp.release();
+                audioPlayer = null;
+            });
+            audioPlayer.prepare();
+            audioPlayer.start();
+            Toast.makeText(this, "Playing — tap again to stop", Toast.LENGTH_SHORT).show();
+        } catch (Exception e) {
+            if (audioPlayer != null) { audioPlayer.release(); audioPlayer = null; }
+            Toast.makeText(this, "Cannot play this audio", Toast.LENGTH_SHORT).show();
+        }
     }
 
     // -------------------- TYPING INDICATORS --------------------
