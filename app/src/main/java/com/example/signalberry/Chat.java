@@ -203,7 +203,15 @@ public class Chat extends AppCompatActivity {
         // Top bar
         ImageButton back = findViewById(R.id.btn_back);
         back.setOnClickListener(v -> finish());
-        ((android.widget.TextView) findViewById(R.id.title_name)).setText(peerName);
+        android.widget.TextView titleView = findViewById(R.id.title_name);
+        titleView.setText(peerName);
+        titleView.setOnClickListener(v -> {
+            if (demoMode) return;
+            Intent g = new Intent(Chat.this, MediaGalleryActivity.class);
+            g.putExtra(MediaGalleryActivity.EXTRA_PEER_KEY, chatDbKey);
+            g.putExtra(MediaGalleryActivity.EXTRA_PEER_NAME, peerName);
+            startActivity(g);
+        });
 
         // RecyclerView
         recycler = findViewById(R.id.chat_list);

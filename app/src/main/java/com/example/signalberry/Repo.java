@@ -62,6 +62,9 @@ final class Repo {
         }
         synchronized (writeLock) {
             db.getWritableDatabase().execSQL("DELETE FROM messages");
+            // purge means the BYTES are gone, not just the rows — without
+            // VACUUM the content lingers in SQLite free pages
+            db.getWritableDatabase().execSQL("VACUUM");
         }
         java.io.File att = new java.io.File(ctx.getFilesDir(), "att");
         java.io.File[] files = att.listFiles();
@@ -80,6 +83,27 @@ final class Repo {
         if (nm != null) nm.cancelAll();
         main.post(() -> { synchronized (listeners) {
             for (Listener l : listeners) l.onItemInserted(""); } });
+        return null;
+    }
+
+    /** Per-chat purge: bridge first (abort on failure), then the local thread.
+     *  Blocking — call off the main thread. @return null on success. */
+    String purgeThread(String peerKey) {
+        try {
+            String base = prefs.getString("bridge", "");
+            if (isEmpty(base)) return "No bridge configured";
+            JSONObject o = new JSONObject();
+            o.put("confirm", "purge");
+            o.put("peer", peerKey);
+            int code = httpPostJson(base + "/v2/purge", o.toString());
+            if (code < 200 || code >= 300) return "Bridge purge failed (" + code + ")";
+        } catch (Exception e) {
+            return "Bridge unreachable — nothing deleted";
+        }
+        deleteThread(peerKey);
+        synchronized (writeLock) {
+            db.getWritableDatabase().execSQL("VACUUM");
+        }
         return null;
     }
 

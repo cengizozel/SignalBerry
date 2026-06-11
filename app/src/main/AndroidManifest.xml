@@ -49,6 +49,10 @@
             android:windowSoftInputMode="stateHidden|adjustResize"/>
 
         <activity
+            android:name=".MediaGalleryActivity"
+            android:exported="false"/>
+
+        <activity
             android:name=".PlayerActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar"

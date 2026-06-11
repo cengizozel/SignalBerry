@@ -135,17 +135,34 @@ public class Messages extends AppCompatActivity {
                     .setTitle(item.get("name"))
                     .setItems(new String[]{
                             muted ? "Unmute" : "Mute notifications",
-                            "Delete conversation"
+                            "Delete conversation (this device)",
+                            "Purge conversation (device + bridge)…"
                     }, (d, w) -> {
                         if (w == 0) {
                             prefs.edit().putBoolean("mute_" + key, !muted).apply();
-                        } else {
+                        } else if (w == 1) {
                             new AlertDialog.Builder(this)
                                     .setMessage("Delete all messages in this conversation from this device? "
-                                            + "(Your phone keeps its copy.)")
+                                            + "(The bridge and your phone keep their copies.)")
                                     .setPositiveButton("Delete", (dd, ww) -> new Thread(() -> {
                                         repo.deleteThread(key);
                                         runOnUiThread(this::rebuildListFromDb);
+                                    }).start())
+                                    .setNegativeButton("Cancel", null)
+                                    .show();
+                        } else {
+                            new AlertDialog.Builder(this)
+                                    .setMessage("Purge this conversation from this device AND the "
+                                            + "bridge server? Your phone's copy is not affected.\n\n"
+                                            + "This cannot be undone.")
+                                    .setPositiveButton("Purge", (dd, ww) -> new Thread(() -> {
+                                        String err = repo.purgeThread(key);
+                                        runOnUiThread(() -> {
+                                            Toast.makeText(Messages.this,
+                                                    err == null ? "Conversation purged" : err,
+                                                    Toast.LENGTH_LONG).show();
+                                            rebuildListFromDb();
+                                        });
                                     }).start())
                                     .setNegativeButton("Cancel", null)
                                     .show();
