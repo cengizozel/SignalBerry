@@ -136,7 +136,9 @@ public class Messages extends AppCompatActivity {
         list.setOnItemLongClickListener((parent, view, position, id) -> {
             @SuppressWarnings("unchecked")
             Map<String, String> item = (Map<String, String>) parent.getItemAtPosition(position);
-            String key = PeerKeys.get(this).resolve(item.get("number"), item.get("uuid"));
+            String gk = item.get("group_key");
+            String key = notEmpty(gk) ? gk
+                    : PeerKeys.get(this).resolve(item.get("number"), item.get("uuid"));
             if (isEmpty(key)) return true;
             boolean muted = prefs.getBoolean("mute_" + key, false);
             boolean hasAlias = notEmpty(prefs.getString("alias_" + key, ""));
@@ -158,6 +160,8 @@ public class Messages extends AppCompatActivity {
                                             + "(The bridge and your phone keep their copies.)")
                                     .setPositiveButton("Delete", (dd, ww) -> new Thread(() -> {
                                         repo.deleteThread(key);
+                                        if (key.startsWith("group:"))
+                                            prefs.edit().putBoolean("group_hidden_" + key, true).apply();
                                         runOnUiThread(this::rebuildListFromDb);
                                     }).start())
                                     .setNegativeButton("Cancel", null)
@@ -169,6 +173,8 @@ public class Messages extends AppCompatActivity {
                                             + "This cannot be undone.")
                                     .setPositiveButton("Purge", (dd, ww) -> new Thread(() -> {
                                         String err = repo.purgeThread(key);
+                                        if (err == null && key.startsWith("group:"))
+                                            prefs.edit().putBoolean("group_hidden_" + key, true).apply();
                                         runOnUiThread(() -> {
                                             Toast.makeText(Messages.this,
                                                     err == null ? "Conversation purged" : err,
@@ -413,6 +419,9 @@ public class Messages extends AppCompatActivity {
                     row.put("is_group", "1");
                     row.put("group_key", key);
                     row.put("group_token", prefs.getString("group_sendid_" + key, ""));
+                    // a stored message means new activity — unhide
+                    if (prefs.getBoolean("group_hidden_" + key, false))
+                        prefs.edit().remove("group_hidden_" + key).apply();
                 }
                 row.put("unread",      String.valueOf(unread));
                 rows.add(row);
@@ -429,6 +438,7 @@ public class Messages extends AppCompatActivity {
                 if (!prefKey.startsWith("group_sendid_group:")) continue;
                 String gkey = prefKey.substring("group_sendid_".length());
                 if (seen.contains(gkey)) continue;
+                if (prefs.getBoolean("group_hidden_" + gkey, false)) continue;
                 Map<String, String> row = new HashMap<>();
                 String gname = prefs.getString("alias_" + gkey, "");
                 if (isEmpty(gname)) gname = prefs.getString("contact_name_" + gkey, "");
@@ -514,14 +524,14 @@ public class Messages extends AppCompatActivity {
         extra.setOrientation(android.widget.LinearLayout.VERTICAL);
         extra.setVisibility(android.view.View.GONE);
         final android.widget.TextView more = new android.widget.TextView(this);
-        more.setText("▸  Additional settings");
+        more.setText("▶  Additional settings");
         more.setTextSize(14);
         more.setTextColor(0xFF888888);
         more.setPadding(dpI(8), dpI(12), dpI(8), dpI(8));
         more.setOnClickListener(v -> {
             boolean show = extra.getVisibility() != android.view.View.VISIBLE;
             extra.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
-            more.setText((show ? "▾" : "▸") + "  Additional settings");
+            more.setText((show ? "▼" : "▶") + "  Additional settings");
         });
         root.addView(more);
         android.widget.LinearLayout extraRow = gridRow();

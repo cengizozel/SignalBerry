@@ -65,15 +65,19 @@ class MessagesAdapter extends BaseAdapter {
         String avatarPath = item.get("avatar_path");
 
         String snippet = item.get("snippet");
+        String time    = item.get("time");
         if (demoMode) {
             name    = DemoData.NAMES[position % DemoData.NAMES.length];
             snippet = DemoData.fakeSnippetByIndex(position);
             avatarPath = "";
+            // staggered recent times so a screenshot reads as an active account
+            time = Utils.formatShortTime(
+                    System.currentTimeMillis() - (position * 13L + 1) * 60_000L);
         }
 
         tvName.setText(name);
         tvSnippet.setText(snippet);
-        tvTime.setText(item.get("time"));
+        tvTime.setText(time);
 
         int count = 0;
         try { count = Integer.parseInt(item.get("unread")); } catch (Exception ignored) {}
@@ -89,7 +93,7 @@ class MessagesAdapter extends BaseAdapter {
         }
 
         int sizePx = dpToPx(44);
-        if ("1".equals(item.get("is_group"))) {
+        if (!demoMode && "1".equals(item.get("is_group"))) {
             final String gkey = item.get("group_key");
             final String gtoken = item.get("group_token");
             Bitmap cached = gkey != null ? BIND_CACHE.get("gav|" + gkey) : null;
@@ -120,7 +124,7 @@ class MessagesAdapter extends BaseAdapter {
             }
             return convertView;
         }
-        if ("1".equals(item.get("is_self"))) {
+        if (!demoMode && "1".equals(item.get("is_self"))) {
             Bitmap note = BIND_CACHE.get("noteself|" + sizePx);
             if (note == null) {
                 note = noteToSelfCircle(sizePx);
