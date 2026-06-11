@@ -337,6 +337,14 @@ public class Messages extends AppCompatActivity {
                         String gid = g.optString("internal_id", "");
                         if (isEmpty(gid)) continue;
                         String gkey = "group:" + gid;
+                        // memberless husk = a group we left/were removed from;
+                        // unsendable and silent forever — drop it from the list
+                        JSONArray mem = g.optJSONArray("members");
+                        if (mem == null || mem.length() == 0) {
+                            ge.remove("group_sendid_" + gkey);
+                            ge.remove("contact_name_" + gkey);
+                            continue;
+                        }
                         String gname = g.optString("name", "");
                         if (notEmpty(gname)) {
                             synchronized (nameByPeerKey) { nameByPeerKey.put(gkey, gname); }
