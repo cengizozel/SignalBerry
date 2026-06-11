@@ -4,6 +4,10 @@
 
     <LinearLayout
         android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="wrap_content" android:layout_height="wrap_content"
         android:background="@drawable/bg_bubble_peer"
         android:orientation="vertical">
 
@@ -66,11 +70,17 @@
                 android:textColor="@color/colorTextSecondary" android:textSize="11sp"/>
         </LinearLayout>
 
+    </LinearLayout>
+
         <TextView
             android:id="@+id/tvReactions"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:textSize="18sp"
-            android:paddingTop="2dp" android:paddingBottom="2dp"
+            android:layout_marginTop="-9dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/bg_reaction_pill"
+            android:paddingLeft="7dp" android:paddingRight="7dp"
+            android:paddingTop="1dp" android:paddingBottom="1dp"
+            android:textSize="13sp"
             android:visibility="gone"/>
     </LinearLayout>
 
