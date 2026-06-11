@@ -64,16 +64,29 @@ final class PeerKeys {
         if (isEmpty(numberOrUuid)) return "";
         String s = numberOrUuid.trim();
         if (UUID_RE.matcher(s).matches()) return s.toLowerCase(Locale.US);
+        // service-id forms like "PNI:<uuid>" (sent after a contact changes
+        // phones / re-registers) must key as the uuid — extracting digits from
+        // one forges a fake phone number and forks the conversation
+        java.util.regex.Matcher uuidIn = UUID_SEARCH.matcher(s);
+        if (uuidIn.find()) return uuidIn.group().toLowerCase(Locale.US);
         String d = digits(s);
-        return !d.isEmpty() ? d : s.toLowerCase(Locale.US);
+        // no real phone number exceeds 15 digits (E.164) — refuse the forgery
+        return (!d.isEmpty() && d.length() <= 15) ? d : s.toLowerCase(Locale.US);
     }
+
+    private static final Pattern UUID_SEARCH = Pattern.compile(
+            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
 
     /**
      * Canonical key for an envelope/contact: number wins; a uuid is translated
      * through the learned map when possible, else used as-is (lowercase).
      */
     synchronized String resolve(String number, String uuid) {
+        // a uuid smuggled into the number slot must not be digit-stripped
+        if (!isEmpty(number) && UUID_SEARCH.matcher(number).find())
+            return normalize(number);
         String n = digits(number);
+        if (n.length() > 15) n = "";
         if (!n.isEmpty()) return n;
         String u = normalize(uuid);
         if (u.isEmpty()) return "";
@@ -85,7 +98,7 @@ final class PeerKeys {
     synchronized void learn(String uuid, String number) {
         String u = normalize(uuid);
         String n = digits(number);
-        if (u.isEmpty() || n.isEmpty() || !isUuidKey(u)) return;
+        if (u.isEmpty() || n.isEmpty() || n.length() > 15 || !isUuidKey(u)) return;
         String prev = uuidToNumber.get(u);
         if (n.equals(prev)) return;
         uuidToNumber.put(u, n);
