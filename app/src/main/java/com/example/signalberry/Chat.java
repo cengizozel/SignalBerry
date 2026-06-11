@@ -526,7 +526,7 @@ public class Chat extends AppCompatActivity {
                     if (err != null && err.toLowerCase(java.util.Locale.US).contains("untrusted")) {
                         promptTrustIdentity();
                     } else {
-                        Toast.makeText(Chat.this, "Send failed — tap the message to retry", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(Chat.this, "Send failed, tap the message to retry", Toast.LENGTH_SHORT).show();
                     }
                 });
             }
@@ -551,7 +551,7 @@ public class Chat extends AppCompatActivity {
                                 + URLEncoder.encode(peer, "UTF-8"), body.toString());
                         runOnUiThread(() -> Toast.makeText(Chat.this,
                                 code >= 200 && code < 300
-                                        ? "Identity trusted — tap the failed message to resend"
+                                        ? "Identity trusted, tap the failed message to resend"
                                         : "Trust failed (" + code + ")",
                                 Toast.LENGTH_LONG).show());
                     } catch (Exception e) {
@@ -741,7 +741,7 @@ public class Chat extends AppCompatActivity {
             //noinspection ResultOfMethodCallIgnored
             f.delete();
             if (!sendIt) Toast.makeText(this, "Recording discarded", Toast.LENGTH_SHORT).show();
-            else Toast.makeText(this, "Too short — not sent", Toast.LENGTH_SHORT).show();
+            else Toast.makeText(this, "Too short, not sent", Toast.LENGTH_SHORT).show();
             return;
         }
         new Thread(() -> {
@@ -1184,7 +1184,7 @@ public class Chat extends AppCompatActivity {
             });
             audioPlayer.prepare();
             audioPlayer.start();
-            Toast.makeText(this, "Playing — tap again to stop", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Playing, tap again to stop", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             if (audioPlayer != null) { audioPlayer.release(); audioPlayer = null; }
             Toast.makeText(this, "Cannot play this audio", Toast.LENGTH_SHORT).show();
@@ -1241,7 +1241,7 @@ public class Chat extends AppCompatActivity {
                 for (MessageItem m : displayItems)
                     if (m.type != MessageItem.TYPE_DATE_HEADER && "peer".equals(m.from)
                             && m.serverTs > openReadTs) n++;
-                displayItems.add(firstUnreadPos, new MessageItem("— " + n + " unread —", true));
+                displayItems.add(firstUnreadPos, new MessageItem(n + " unread", true));
             }
         }
         chatAdapter.notifyDataSetChanged();

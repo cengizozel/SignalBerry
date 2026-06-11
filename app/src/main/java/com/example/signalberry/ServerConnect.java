@@ -54,11 +54,28 @@ public class ServerConnect extends AppCompatActivity {
                 || notEmpty(prefs.getString("cf_access_id", ""))
                 || notEmpty(prefs.getString("bridge_url_pref", ""));
         remoteSection.setVisibility(hasRemote ? android.view.View.VISIBLE : android.view.View.GONE);
-        remoteToggle.setText((hasRemote ? "▼" : "▶") + "  Remote access (Cloudflare)");
+        remoteToggle.setText((hasRemote ? "▼" : "▶") + "  Remote access (optional)");
+        findViewById(R.id.remote_info).setOnClickListener(t ->
+                new androidx.appcompat.app.AlertDialog.Builder(this)
+                        .setTitle("Remote access")
+                        .setMessage("Optional. Leave blank to use SignalBerry on your home "
+                                + "WiFi; nothing here is needed for that.\n\n"
+                                + "To use it away from home, your server has to be reachable "
+                                + "over the internet. A Cloudflare Tunnel is the practical way "
+                                + "on BlackBerry (which can't run a VPN), with no open ports.\n\n"
+                                + "These fields secure that connection:\n"
+                                + "• Bridge URL: your server's bridge address\n"
+                                + "• Bridge token: the shared secret that guards your server\n"
+                                + "• CF Access ID/Secret: optional extra Cloudflare gate\n\n"
+                                + "Without a token anyone who finds your address could read and "
+                                + "send your messages, so it's required once you go remote.")
+                        .setPositiveButton("Got it", null)
+                        .show());
+
         remoteToggle.setOnClickListener(t -> {
             boolean show = remoteSection.getVisibility() != android.view.View.VISIBLE;
             remoteSection.setVisibility(show ? android.view.View.VISIBLE : android.view.View.GONE);
-            remoteToggle.setText((show ? "▼" : "▶") + "  Remote access (Cloudflare)");
+            remoteToggle.setText((show ? "▼" : "▶") + "  Remote access (optional)");
         });
 
         connectBtn.setOnClickListener(v -> {

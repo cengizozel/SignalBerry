@@ -81,7 +81,7 @@ public class Messages extends AppCompatActivity {
         @Override public void onEphemeral(String peerKey, String kind) {
             if (kind != null && kind.startsWith("api_mismatch")) {
                 handler.post(() -> Toast.makeText(Messages.this,
-                        "Bridge/app version mismatch — some messages may not sync. "
+                        "Bridge/app version mismatch. Some messages may not sync. "
                         + "Update the bridge or the app.", Toast.LENGTH_LONG).show());
             }
         }
@@ -667,7 +667,7 @@ public class Messages extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("Send read receipts?")
                 .setMessage("Only enable this if read receipts are also enabled in Signal on "
-                        + "your phone — otherwise contacts would see read status your account "
+                        + "your phone, otherwise contacts would see read status your account "
                         + "setting is meant to hide.")
                 .setPositiveButton("Enable", (d, w) -> {
                     prefs.edit().putBoolean("send_read_receipts", true).apply();

@@ -58,7 +58,7 @@ final class Repo {
             int code = httpPostJson(base + "/v2/purge", "{\"confirm\":\"purge\"}");
             if (code < 200 || code >= 300) return "Bridge purge failed (" + code + ")";
         } catch (Exception e) {
-            return "Bridge unreachable — nothing deleted";
+            return "Bridge unreachable, nothing deleted";
         }
         synchronized (writeLock) {
             db.getWritableDatabase().execSQL("DELETE FROM messages");
@@ -98,7 +98,7 @@ final class Repo {
             int code = httpPostJson(base + "/v2/purge", o.toString());
             if (code < 200 || code >= 300) return "Bridge purge failed (" + code + ")";
         } catch (Exception e) {
-            return "Bridge unreachable — nothing deleted";
+            return "Bridge unreachable, nothing deleted";
         }
         deleteThread(peerKey);
         synchronized (writeLock) {
@@ -786,7 +786,7 @@ final class Repo {
             if (got != EXPECTED_API_VERSION) {
                 apiMismatchWarned = true;
                 DebugLog.log("BRIDGE API MISMATCH: bridge=" + got
-                        + " app=" + EXPECTED_API_VERSION + " — update one to match");
+                        + " app=" + EXPECTED_API_VERSION + ", update one to match");
                 main.post(() -> {
                     for (Listener l : listenersSnapshot())
                         l.onEphemeral("", "api_mismatch:" + got);

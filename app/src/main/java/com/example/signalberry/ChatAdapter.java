@@ -459,7 +459,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             case Chat.ST_SENT:      tv.setText(at + "\u2713");        tv.setTextColor(0xFF9E9E9E); break;
             case Chat.ST_DELIVERED: tv.setText(at + "\u2713\u2713"); tv.setTextColor(0xFF9E9E9E); break;
             case Chat.ST_READ:      tv.setText(at + "\u2713\u2713"); tv.setTextColor(Utils.ACCENT); break;
-            case Chat.ST_FAILED:    tv.setText("\u2715 failed \u2014 tap to retry"); tv.setTextColor(0xFFD32F2F); break;
+            case Chat.ST_FAILED:    tv.setText("\u2715 failed, tap to retry"); tv.setTextColor(0xFFD32F2F); break;
             default:                tv.setText(at.trim());
         }
     }
