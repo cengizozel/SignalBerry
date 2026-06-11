@@ -325,6 +325,13 @@ public class Chat extends AppCompatActivity {
             }
             return false;
         });
+        // Q10 hardware keyboard: Enter sends, Alt/Shift+Enter inserts a newline
+        input.setOnKeyListener((v, keyCode, event) -> {
+            if (keyCode != android.view.KeyEvent.KEYCODE_ENTER) return false;
+            if (event.isAltPressed() || event.isShiftPressed()) return false;
+            if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) send.performClick();
+            return true; // consume both DOWN and UP
+        });
 
         attach.setOnClickListener(v -> {
             Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
@@ -394,6 +401,7 @@ public class Chat extends AppCompatActivity {
                 .putString("last_read_peer", chatDbKey)
                 .putString("open_chat_peer", chatDbKey)
                 .apply();
+        MessageService.clearNotification(this, chatDbKey);
         advanceReadWatermark();
     }
 
@@ -485,19 +493,47 @@ public class Chat extends AppCompatActivity {
     }
 
     private void retryFailedSend(MessageItem failed) {
-        final String text = failed.text;
         final long oldKey = failed.serverTs; // -nonce
-        if (failed.type != MessageItem.TYPE_TEXT || isEmpty(text)) return;
+        final boolean isText = failed.type == MessageItem.TYPE_TEXT;
+        if (isText && isEmpty(failed.text)) return;
+        if (!isText && isEmpty(failed.localUri)) return; // media gone from store
         new android.app.AlertDialog.Builder(this)
                 .setMessage("Resend this message?")
                 .setPositiveButton("Resend", (d, w) -> {
                     repo.deleteLocal(chatDbKey, java.util.Collections.singletonList(oldKey));
-                    sendText(text, null, 0);
+                    if (isText) {
+                        sendText(failed.text, null, 0);
+                    } else {
+                        resendMedia(failed);
+                    }
                 })
                 .setNegativeButton("Delete", (d, w) ->
                         repo.deleteLocal(chatDbKey, java.util.Collections.singletonList(oldKey)))
                 .setNeutralButton("Cancel", null)
                 .show();
+    }
+
+    /** Re-run the streaming send from the imported copy still in the store. */
+    private void resendMedia(MessageItem failed) {
+        final String path = failed.localUri;
+        final String mime = isEmpty(failed.mime) ? "application/octet-stream" : failed.mime;
+        final String kind = failed.msgType;
+        final String cap  = failed.caption;
+        final String recipient = notEmpty(peerNumber) ? peerNumber : peerUuid;
+        final java.io.File f = new java.io.File(path.startsWith("file://") ? path.substring(7) : path);
+        if (!f.exists()) { Toast.makeText(this, "Original file no longer available", Toast.LENGTH_SHORT).show(); return; }
+        final long nonce = repo.beginSend(chatDbKey, kind, null, mime, cap, path, 0, null, null);
+        if (nonce <= 0) return;
+        new Thread(() -> {
+            try {
+                String tsRaw = AttachmentStore.sendStreaming(baseSignal, myNumber, recipient,
+                        cap, mime, f, null, null, null);
+                if (tsRaw != null) repo.confirmSend(chatDbKey, nonce, tsRaw, kind, cap, null, mime, 0, null, null);
+                else repo.failSend(chatDbKey, nonce);
+            } catch (Exception e) {
+                repo.failSend(chatDbKey, nonce);
+            }
+        }).start();
     }
 
     /** POST /v2/send; returns the raw timestamp string from the response
@@ -921,6 +957,25 @@ public class Chat extends AppCompatActivity {
                 actionRow.addView(btnRd);
             }
             container.addView(actionRow);
+        }
+
+        String copyable = m.type == MessageItem.TYPE_TEXT ? m.text : m.caption;
+        if (notEmpty(copyable)) {
+            android.widget.Button btnCopy = new android.widget.Button(this);
+            btnCopy.setText("📄 Copy");
+            btnCopy.setOnClickListener(v -> {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                        getSystemService(CLIPBOARD_SERVICE);
+                if (cm != null) {
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("message", copyable));
+                    Toast.makeText(Chat.this, "Copied", Toast.LENGTH_SHORT).show();
+                }
+                if (ref[0] != null) ref[0].dismiss();
+            });
+            android.widget.LinearLayout copyRow = new android.widget.LinearLayout(this);
+            copyRow.setGravity(android.view.Gravity.CENTER);
+            copyRow.addView(btnCopy);
+            container.addView(copyRow);
         }
 
         ref[0] = new android.app.AlertDialog.Builder(this)

@@ -159,27 +159,35 @@ public class MessageService extends Service {
             String srcUuid = env.optString("sourceUuid", "");
             if (isEmpty(name)) name = isEmpty(srcNum) ? shortUuid(srcUuid) : srcNum;
 
-            showMessageNotif(name, r.snippet, srcNum, srcUuid);
+            showMessageNotif(r.peerKey, name, r.snippet, srcNum, srcUuid);
         } catch (Exception ignored) {}
     }
 
     // ── Notifications ────────────────────────────────────────────────────────
 
-    private void showMessageNotif(String sender, String body, String number, String uuid) {
+    private void showMessageNotif(String peerKey, String sender, String body,
+                                  String number, String uuid) {
+        SharedPreferences prefs = getSharedPreferences("signalberry", MODE_PRIVATE);
+        int count = prefs.getInt("notif_count_" + peerKey, 0) + 1;
+        prefs.edit().putInt("notif_count_" + peerKey, count).apply();
+
+        // back stack: Messages behind Chat, so back from a cold-start
+        // notification lands on the conversation list, not the launcher
         Intent open = new Intent(this, Chat.class)
                 .putExtra("peer_name",   sender)
                 .putExtra("peer_number", number)
-                .putExtra("peer_uuid",   uuid)
-                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-
+                .putExtra("peer_uuid",   uuid);
+        androidx.core.app.TaskStackBuilder tsb = androidx.core.app.TaskStackBuilder.create(this)
+                .addNextIntent(new Intent(this, Messages.class))
+                .addNextIntent(open);
         int flags = Build.VERSION.SDK_INT >= 23
                 ? PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
                 : PendingIntent.FLAG_UPDATE_CURRENT;
-        PendingIntent pi = PendingIntent.getActivity(this, (int) System.currentTimeMillis(), open, flags);
+        PendingIntent pi = tsb.getPendingIntent(peerKey.hashCode(), flags);
 
         Notification notif = new NotificationCompat.Builder(this, CH_MESSAGES)
                 .setSmallIcon(android.R.drawable.ic_dialog_email)
-                .setContentTitle(sender)
+                .setContentTitle(count > 1 ? sender + " (" + count + ")" : sender)
                 .setContentText(body)
                 .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -188,7 +196,15 @@ public class MessageService extends Service {
                 .build();
 
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null) nm.notify(NOTIF_ID_MSG, notif);
+        if (nm != null) nm.notify(peerKey.hashCode(), notif);
+    }
+
+    /** Chat calls this (via Repo prefs) when a thread is opened. */
+    static void clearNotification(Context ctx, String peerKey) {
+        ctx.getSharedPreferences("signalberry", Context.MODE_PRIVATE)
+                .edit().remove("notif_count_" + peerKey).apply();
+        NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.cancel(peerKey.hashCode());
     }
 
     private Notification buildForegroundNotif() {

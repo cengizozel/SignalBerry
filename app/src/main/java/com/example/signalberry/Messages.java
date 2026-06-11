@@ -174,9 +174,23 @@ public class Messages extends AppCompatActivity {
                             "Send read receipts: " + (rrOn ? "ON ✓" : "OFF")
                     }, (dialog, which) -> {
                         if (which == 0) {
-                            prefs.edit().clear().apply();
-                            startActivity(new Intent(Messages.this, ServerConnect.class));
-                            finish();
+                            new AlertDialog.Builder(Messages.this)
+                                    .setMessage("Log out and wipe all local messages, media and caches from this device?")
+                                    .setPositiveButton("Log out", (dd, ww) -> {
+                                        stopService(new Intent(Messages.this, MessageService.class));
+                                        android.app.NotificationManager nm = (android.app.NotificationManager)
+                                                getSystemService(NOTIFICATION_SERVICE);
+                                        if (nm != null) nm.cancelAll();
+                                        deleteDatabase("signalberry.db");
+                                        deleteRecursive(new java.io.File(getFilesDir(), "att"));
+                                        deleteRecursive(getCacheDir());
+                                        getSharedPreferences("peer_map", MODE_PRIVATE).edit().clear().apply();
+                                        prefs.edit().clear().apply();
+                                        startActivity(new Intent(Messages.this, ServerConnect.class));
+                                        finish();
+                                    })
+                                    .setNegativeButton("Cancel", null)
+                                    .show();
                         } else if (which == 1) {
                             boolean newVal = !prefs.getBoolean("debug_log", false);
                             prefs.edit().putBoolean("debug_log", newVal).apply();
@@ -401,6 +415,14 @@ public class Messages extends AppCompatActivity {
                 handler.post(() -> iv.setImageBitmap(circle));
             } catch (Exception ignored) {}
         }).start();
+    }
+
+    private static void deleteRecursive(java.io.File f) {
+        if (f == null || !f.exists()) return;
+        java.io.File[] kids = f.listFiles();
+        if (kids != null) for (java.io.File k : kids) deleteRecursive(k);
+        //noinspection ResultOfMethodCallIgnored
+        f.delete();
     }
 
     private Bitmap initialsCircle(String label, int size) {

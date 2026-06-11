@@ -589,7 +589,7 @@ class MessageDatabase extends SQLiteOpenHelper {
 
     int countUnread(String peerKey, long readTs) {
         Cursor c = getReadableDatabase().rawQuery(
-                "SELECT COUNT(*) FROM " + T + " WHERE peer_key=? AND dir='in' AND server_ts>? AND status!=" + ST_DELETED,
+                "SELECT COUNT(*) FROM " + T + " WHERE peer_key=? AND dir='in' AND server_ts>? AND status>=0",
                 new String[]{peerKey, String.valueOf(readTs)});
         int n = 0;
         if (c.moveToFirst()) n = c.getInt(0);
@@ -598,7 +598,10 @@ class MessageDatabase extends SQLiteOpenHelper {
     }
 
     void deleteByServerTs(String peerKey, long serverTs) {
-        getWritableDatabase().execSQL("UPDATE " + T + " SET status=? WHERE peer_key=? AND (server_ts=? OR last_edit_ts=?)",
+        // scrub content; keep the identity tombstone so re-delivery stays deduped
+        getWritableDatabase().execSQL("UPDATE " + T + " SET status=?, text='', caption=NULL, " +
+                "local_uri=NULL, reactions=NULL, quote_text=NULL, edit_history=NULL " +
+                "WHERE peer_key=? AND (server_ts=? OR last_edit_ts=?)",
                 new Object[]{ST_DELETED, peerKey, serverTs, serverTs});
     }
 
