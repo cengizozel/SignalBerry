@@ -55,6 +55,9 @@ public class Chat extends AppCompatActivity {
     private boolean isGroup;
     private String sendRecipient;   // number/uuid for DMs, "group.<token>" for groups
     private final java.util.Map<String, String> authorNames = new java.util.HashMap<>();
+    // group roster {memberId, displayName}; pending @mentions {displayName, author}
+    private final List<String[]> groupMembers = new ArrayList<>();
+    private final List<String[]> pendingMentions = new ArrayList<>();
 
     // Reply state
     private MessageItem replyToItem = null;
@@ -224,11 +227,10 @@ public class Chat extends AppCompatActivity {
         titleView.setText(peerName);
         findViewById(R.id.title_container).setOnClickListener(v -> {
             if (demoMode) return;
-            Intent g = new Intent(Chat.this, MediaGalleryActivity.class);
-            g.putExtra(MediaGalleryActivity.EXTRA_PEER_KEY, chatDbKey);
-            g.putExtra(MediaGalleryActivity.EXTRA_PEER_NAME, peerName);
-            startActivity(g);
+            if (isGroup) { showGroupInfo(); return; }
+            openGallery();
         });
+        if (isGroup) new Thread(this::loadGroupMembers).start();
 
         // RecyclerView
         recycler = findViewById(R.id.chat_list);
@@ -400,16 +402,24 @@ public class Chat extends AppCompatActivity {
             replyToItem = null;
             replyToTs   = 0;
             replyPreviewBar.setVisibility(android.view.View.GONE);
+            JSONArray mentions = buildMentions(text);
+            pendingMentions.clear();
             input.setText("");
             handler.removeCallbacks(typingStopRun);
             if (typingSent) { typingSent = false; new Thread(this::sendTypingStop).start(); }
 
-            sendText(text, replyItem, replyTs);
+            sendText(text, replyItem, replyTs, mentions);
         });
 
         input.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
-            @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
+            @Override public void onTextChanged(CharSequence s, int st, int before, int count) {
+                // a freshly typed "@" in a group opens the member picker
+                if (isGroup && count == 1 && before == 0 && st < s.length()
+                        && s.charAt(st) == '@') {
+                    showMentionPicker(st);
+                }
+            }
             @Override public void afterTextChanged(android.text.Editable s) {
                 handler.removeCallbacks(typingStopRun);
                 if (s.length() > 0) {
@@ -491,6 +501,10 @@ public class Chat extends AppCompatActivity {
     // -------------------- SEND --------------------
 
     private void sendText(String text, MessageItem replyItem, long replyTs) {
+        sendText(text, replyItem, replyTs, null);
+    }
+
+    private void sendText(String text, MessageItem replyItem, long replyTs, JSONArray mentions) {
         final String qt = replyItem == null ? null
                 : (replyItem.type == MessageItem.TYPE_IMAGE ? "📷 Photo"
                    : (replyItem.text != null ? replyItem.text : ""));
@@ -501,7 +515,7 @@ public class Chat extends AppCompatActivity {
         if (nonce <= 0) { Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show(); return; }
 
         new Thread(() -> {
-            String tsRaw = sendOnce(text, replyItem, replyTs);
+            String tsRaw = sendOnce(text, replyItem, replyTs, mentions);
             if (tsRaw != null) {
                 repo.confirmSend(chatDbKey, nonce, tsRaw, "text", text, null, null,
                         replyTs, qt, qa);
@@ -831,6 +845,113 @@ public class Chat extends AppCompatActivity {
 
     /** Peer avatar in the title bar: photo if the contact has one, initials
      *  otherwise, notepad for Note to Self. Same cache as the chat list. */
+    /** Replace the just-typed "@" (at atPos) with "@Name " and record the span
+     *  author so the send path can attach a proper mention. */
+    private void showMentionPicker(int atPos) {
+        List<String[]> members;
+        synchronized (groupMembers) { members = new ArrayList<>(groupMembers); }
+        if (members.isEmpty()) return;
+        final List<String[]> mentionable = new ArrayList<>();
+        for (String[] m : members) if (!"You".equals(m[1])) mentionable.add(m);
+        if (mentionable.isEmpty()) return;
+        final String[] labels = new String[mentionable.size()];
+        for (int i = 0; i < labels.length; i++) labels[i] = mentionable.get(i)[1];
+
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Mention")
+                .setItems(labels, (d, which) -> {
+                    String[] m = mentionable.get(which);
+                    EditText input = findViewById(R.id.input_message);
+                    android.text.Editable e = input.getText();
+                    int end = Math.min(atPos + 1, e.length()); // the "@" we replace
+                    String insert = "@" + m[1] + " ";
+                    e.replace(atPos, end, insert);
+                    input.setSelection(Math.min(atPos + insert.length(), input.length()));
+                    pendingMentions.add(new String[]{m[1], m[0]}); // displayName, author
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Build the wire mentions array by locating each pending "@Name" in the
+     *  final text. Tolerant of edits — unmatched pending mentions are dropped. */
+    private JSONArray buildMentions(String text) {
+        if (pendingMentions.isEmpty()) return null;
+        JSONArray arr = new JSONArray();
+        int cursor = 0;
+        try {
+            for (String[] pm : pendingMentions) {
+                String tag = "@" + pm[0];
+                int idx = text.indexOf(tag, cursor);
+                if (idx < 0) continue;
+                JSONObject o = new JSONObject();
+                o.put("start", idx);
+                o.put("length", tag.length());
+                o.put("author", pm[1]);
+                arr.put(o);
+                cursor = idx + tag.length();
+            }
+        } catch (Exception ignored) {}
+        return arr.length() > 0 ? arr : null;
+    }
+
+    private void openGallery() {
+        Intent g = new Intent(Chat.this, MediaGalleryActivity.class);
+        g.putExtra(MediaGalleryActivity.EXTRA_PEER_KEY, chatDbKey);
+        g.putExtra(MediaGalleryActivity.EXTRA_PEER_NAME, peerName);
+        startActivity(g);
+    }
+
+    /** Fetch the group roster once; resolve each member to a display name. */
+    private void loadGroupMembers() {
+        try {
+            String gid = chatDbKey.substring("group:".length());
+            JSONArray groups = new JSONArray(httpGet(baseSignal + "/v1/groups/"
+                    + URLEncoder.encode(myNumber, "UTF-8")));
+            for (int i = 0; i < groups.length(); i++) {
+                JSONObject g = groups.optJSONObject(i);
+                if (g == null || !gid.equals(g.optString("internal_id", ""))) continue;
+                JSONArray mem = g.optJSONArray("members");
+                List<String[]> out = new ArrayList<>();
+                String selfKey = digits(myNumber);
+                for (int j = 0; mem != null && j < mem.length(); j++) {
+                    String id = mem.optString(j, "");
+                    if (isEmpty(id)) continue;
+                    String key = PeerKey.normalize(id);
+                    String name;
+                    if (key.equals(selfKey)) name = "You";
+                    else {
+                        name = prefs.getString("alias_" + key, "");
+                        if (isEmpty(name)) name = prefs.getString("contact_name_" + key, "");
+                        if (isEmpty(name)) name = id;
+                    }
+                    out.add(new String[]{id, name});
+                }
+                synchronized (groupMembers) {
+                    groupMembers.clear();
+                    groupMembers.addAll(out);
+                }
+                return;
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void showGroupInfo() {
+        List<String[]> members;
+        synchronized (groupMembers) { members = new ArrayList<>(groupMembers); }
+        StringBuilder sb = new StringBuilder();
+        if (members.isEmpty()) sb.append("Loading members…");
+        else for (String[] m : members) sb.append("• ").append(m[1]).append("\n");
+
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(peerName)
+                .setMessage(members.isEmpty() ? sb.toString()
+                        : members.size() + " members\n\n" + sb.toString().trim())
+                .setPositiveButton("Media & files", (d, w) -> openGallery())
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
     /** Group bubbles need "who said this": map author keys to display names. */
     private void resolveAuthors(List<MessageItem> items) {
         if (!isGroup) return;
