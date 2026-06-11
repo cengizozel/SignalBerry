@@ -424,7 +424,7 @@ public class Messages extends AppCompatActivity {
                     : AppCompatDelegate.MODE_NIGHT_NO);
         });
         addToggle(row1, "✓✓", "Read receipts", "send_read_receipts", radius, primaryText, true, null);
-        addToggle(row2, "🔬", "Demo mode", "demo_mode", radius, primaryText, false, () -> {
+        addToggle(row2, "🤖", "Demo mode", "demo_mode", radius, primaryText, false, () -> {
             adapter.setDemoMode(prefs.getBoolean("demo_mode", false));
             filter(search.getText().toString());
         });
