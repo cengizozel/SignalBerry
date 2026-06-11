@@ -988,11 +988,13 @@ public class Chat extends AppCompatActivity {
 
         final androidx.appcompat.app.AlertDialog[] ref = {null};
 
-        // reactions: evenly weighted so all 8 always fit; 😲 not 😮 (6.1 = tofu here)
-        String[] emojis = {"👍", "❤️", "😂", "😲", "😢", "👎", "🙏", "🎉"};
+        // pinned reactions (long-press a pin to swap it; "+" opens the full picker)
+        String[] emojis = pinnedReactions();
         android.widget.LinearLayout emojiRow = new android.widget.LinearLayout(this);
         emojiRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-        for (String e : emojis) {
+        for (int i = 0; i < emojis.length; i++) {
+            final String e = emojis[i];
+            final int slot = i;
             android.widget.TextView tv = new android.widget.TextView(this);
             tv.setText(e);
             tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 22);
@@ -1013,8 +1015,35 @@ public class Chat extends AppCompatActivity {
                 sendReaction(e, m, e.equals(myCurrentReaction));
                 if (ref[0] != null) ref[0].dismiss();
             });
+            tv.setOnLongClickListener(v -> {
+                showEmojiPicker("Pin a reaction", picked -> {
+                    String[] pins = pinnedReactions();
+                    pins[slot] = picked;
+                    prefs.edit().putString("pinned_reactions",
+                            android.text.TextUtils.join(" ", pins)).apply();
+                    Toast.makeText(Chat.this, "Pinned " + picked, Toast.LENGTH_SHORT).show();
+                    if (ref[0] != null) ref[0].dismiss();
+                    showMessageMenu(displayPos); // reopen with the new pin visible
+                });
+                return true;
+            });
             emojiRow.addView(tv);
         }
+        // "+" → react with any emoji
+        android.widget.TextView plus = new android.widget.TextView(this);
+        plus.setText("+");
+        plus.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 22);
+        plus.setTextColor(0xFF2196F3);
+        plus.setGravity(android.view.Gravity.CENTER);
+        plus.setPadding(0, dpC(8), 0, dpC(8));
+        plus.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        plus.setOnClickListener(v -> {
+            if (ref[0] != null) ref[0].dismiss();
+            showEmojiPicker("React", picked ->
+                    sendReaction(picked, m, picked.equals(myCurrentReaction)));
+        });
+        emojiRow.addView(plus);
         container.addView(emojiRow);
 
         android.view.View div = new android.view.View(this);
@@ -1083,6 +1112,59 @@ public class Chat extends AppCompatActivity {
         android.widget.ScrollView s = new android.widget.ScrollView(this);
         s.addView(child);
         return s;
+    }
+
+    interface EmojiSink { void onPick(String emoji); }
+
+    private static final String DEFAULT_PINS = "👍 ❤️ 😂 😲 😢 👎 🙏 🎉";
+    /** Unicode 6.0-era set — the device's emoji font predates anything newer. */
+    private static final String EMOJI_SET =
+            "😁 😂 😃 😄 😅 😆 😉 😊 😋 😌 😍 😎 😏 😐 😒 😓 😔 😖 😘 😚 😜 😝 😞 😠 " +
+            "😡 😢 😣 😤 😥 😨 😩 😪 😫 😭 😰 😱 😲 😳 😵 😶 😷 🙈 🙉 🙊 🙏 🙌 🙋 🙇 " +
+            "👍 👎 👌 👊 ✊ ✋ 👋 👏 💪 ✌ ☝ 👆 👇 👈 👉 " +
+            "❤ 💔 💕 💖 💗 💘 💙 💚 💛 💜 💝 💞 💟 " +
+            "🎉 🎊 🎁 🎂 🎈 🏆 🎵 🎶 ⭐ 🌟 ✨ 🔥 💢 💤 💦 💨 💫 💥 💯 " +
+            "🌹 🌸 🌺 🌻 🍀 ☀ ☁ ☔ ⚡ ❄ ⛄ 🌈 🌙 " +
+            "🐱 🐶 🐭 🐹 🐰 🐻 🐼 🐨 🐯 🐮 🐷 🐸 🐵 🐔 🐧 🐦 🐢 🐍 🐳 🐬 🐟 " +
+            "🍕 🍔 🍟 🍗 🍖 🍜 🍣 🍦 🍩 🍪 🍫 🍬 🍭 ☕ 🍵 🍺 🍻 🍷 " +
+            "⚽ 🏀 🏈 🎾 🎮 🎲 🎯 🚀 ✈ 🚗 🏠 💀 👻 👽 💩 🔞 ❗ ❓ ✅ ❌";
+
+    private String[] pinnedReactions() {
+        String[] pins = prefs.getString("pinned_reactions", DEFAULT_PINS).split(" ");
+        return pins.length > 0 ? pins : DEFAULT_PINS.split(" ");
+    }
+
+    private void showEmojiPicker(String title, final EmojiSink sink) {
+        final String[] all = EMOJI_SET.split("\\s+");
+        android.widget.GridView grid = new android.widget.GridView(this);
+        grid.setNumColumns(8);
+        grid.setPadding(dpC(8), dpC(8), dpC(8), dpC(8));
+        grid.setAdapter(new android.widget.BaseAdapter() {
+            @Override public int getCount() { return all.length; }
+            @Override public Object getItem(int i) { return all[i]; }
+            @Override public long getItemId(int i) { return i; }
+            @Override public android.view.View getView(int i, android.view.View cv,
+                                                       android.view.ViewGroup parent) {
+                android.widget.TextView tv = cv instanceof android.widget.TextView
+                        ? (android.widget.TextView) cv : new android.widget.TextView(Chat.this);
+                tv.setText(all[i]);
+                tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 24);
+                tv.setGravity(android.view.Gravity.CENTER);
+                tv.setPadding(0, dpC(8), 0, dpC(8));
+                return tv;
+            }
+        });
+        final androidx.appcompat.app.AlertDialog d =
+                new androidx.appcompat.app.AlertDialog.Builder(this)
+                        .setTitle(title)
+                        .setView(grid)
+                        .setNegativeButton("Cancel", null)
+                        .create();
+        grid.setOnItemClickListener((parent, view, pos, id) -> {
+            d.dismiss();
+            sink.onPick(all[pos]);
+        });
+        d.show();
     }
 
     private int dpC(int dp) {
