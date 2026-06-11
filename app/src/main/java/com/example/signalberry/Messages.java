@@ -367,8 +367,11 @@ public class Messages extends AppCompatActivity {
 
     // ---------------- list building (DB is the single source of truth) ----------------
 
+    private final java.util.concurrent.ExecutorService rebuildExec =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
     private void rebuildListFromDb() {
-        new Thread(() -> {
+        rebuildExec.execute(() -> {
             List<android.util.Pair<String, String[]>> summaries = repo.db.getConversationSummaries();
             List<Map<String, String>> rows = new ArrayList<>();
             for (android.util.Pair<String, String[]> s : summaries) {
@@ -400,7 +403,7 @@ public class Messages extends AppCompatActivity {
                 all.addAll(rows);
                 filter(search == null ? "" : search.getText().toString());
             });
-        }).start();
+        });
     }
 
     // ---------------- Search filter (mutates the bound adapter's list) ----------------

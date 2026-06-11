@@ -89,26 +89,47 @@ class MessagesAdapter extends BaseAdapter {
         }
 
         int sizePx = dpToPx(44);
-        ivAvatar.setImageBitmap(initialsCircle(name, sizePx));
+        String initialsKey = (name == null || name.isEmpty() ? "?" : name.substring(0, 1)) + "|"
+                + Math.abs((name == null ? 0 : name.hashCode()) % PALETTE.length);
+        Bitmap initials = BIND_CACHE.get("init|" + initialsKey);
+        if (initials == null) {
+            initials = initialsCircle(name, sizePx);
+            BIND_CACHE.put("init|" + initialsKey, initials);
+        }
+        ivAvatar.setImageBitmap(initials);
         ivAvatar.setTag(number);
 
         if (!demoMode && avatarCache != null && number != null && !number.isEmpty()) {
             final String tag = number;
             final String path = avatarPath;
-            new Thread(() -> {
-                Bitmap raw = avatarCache.fetch(number, path);
-                if (raw == null) return;
-                Bitmap circle = circleCrop(raw, sizePx);
-                handler.post(() -> {
-                    if (tag.equals(ivAvatar.getTag())) {
-                        ivAvatar.setImageBitmap(circle);
-                    }
+            Bitmap cachedCircle = BIND_CACHE.get("av|" + number);
+            if (cachedCircle != null) {
+                ivAvatar.setImageBitmap(cachedCircle);
+            } else {
+                BIND_EXEC.execute(() -> {
+                    Bitmap raw = avatarCache.fetch(number, path);
+                    if (raw == null) return;
+                    Bitmap circle = circleCrop(raw, sizePx);
+                    BIND_CACHE.put("av|" + number, circle);
+                    handler.post(() -> {
+                        if (tag.equals(ivAvatar.getTag())) {
+                            ivAvatar.setImageBitmap(circle);
+                        }
+                    });
                 });
-            }).start();
+            }
         }
 
         return convertView;
     }
+
+    /** Row binds fire constantly while scrolling — never allocate or thread there. */
+    private static final android.util.LruCache<String, Bitmap> BIND_CACHE =
+            new android.util.LruCache<String, Bitmap>(2 * 1024) {
+                @Override protected int sizeOf(String k, Bitmap v) { return v.getByteCount() / 1024; }
+            };
+    private static final java.util.concurrent.ExecutorService BIND_EXEC =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
 
     private int dpToPx(int dp) {
         return (int) (dp * ctx.getResources().getDisplayMetrics().density + 0.5f);
