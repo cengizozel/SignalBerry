@@ -75,15 +75,32 @@ final class Utils {
         try { return Integer.parseInt(s); } catch (Exception e) { return 0; }
     }
 
+    /** Conversation-list ladder: 5m → 14:32 → Wed → 6/11 → 6/11/25. */
     static String formatShortTime(long tsMillis) {
         if (tsMillis <= 0) return "";
+        long diff = System.currentTimeMillis() - tsMillis;
+        if (diff >= 0 && diff < 60_000) return "now";
+        if (diff >= 0 && diff < 3600_000) return (diff / 60_000) + "m";
         Calendar now = Calendar.getInstance();
         Calendar t   = Calendar.getInstance();
         t.setTimeInMillis(tsMillis);
         boolean sameDay = now.get(Calendar.YEAR)         == t.get(Calendar.YEAR)
                        && now.get(Calendar.DAY_OF_YEAR)  == t.get(Calendar.DAY_OF_YEAR);
         if (sameDay) return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(tsMillis));
-        return new SimpleDateFormat("MMM d", Locale.getDefault()).format(new Date(tsMillis));
+        if (diff >= 0 && diff < 7L * 24 * 3600_000)
+            return new SimpleDateFormat("EEE", Locale.getDefault()).format(new Date(tsMillis));
+        boolean sameYear = now.get(Calendar.YEAR) == t.get(Calendar.YEAR);
+        return new SimpleDateFormat(sameYear ? "M/d" : "M/d/yy", Locale.getDefault())
+                .format(new Date(tsMillis));
+    }
+
+    /** In-bubble time: 5m while fresh, then clock time (date headers carry the day). */
+    static String formatBubbleTime(long tsMillis) {
+        if (tsMillis <= 0) return "";   // pending rows use negative nonce timestamps
+        long diff = System.currentTimeMillis() - tsMillis;
+        if (diff >= 0 && diff < 60_000) return "now";
+        if (diff >= 0 && diff < 3600_000) return (diff / 60_000) + "m";
+        return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(tsMillis));
     }
 
     // ── Network / URL ─────────────────────────────────────────────────────────

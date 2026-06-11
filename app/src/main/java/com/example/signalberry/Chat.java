@@ -357,6 +357,13 @@ public class Chat extends AppCompatActivity {
             return true; // consume both DOWN and UP
         });
 
+        ImageButton mic = findViewById(R.id.btn_mic);
+        mic.setOnClickListener(v -> toggleRecording());
+        mic.setOnLongClickListener(v -> {
+            if (recorder != null) { stopRecording(false); return true; }
+            return false;
+        });
+
         attach.setOnClickListener(v -> {
             Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
             pick.setType("*/*");
@@ -431,6 +438,7 @@ public class Chat extends AppCompatActivity {
 
     @Override protected void onPause() {
         super.onPause();
+        if (recorder != null) stopRecording(false);
         handler.removeCallbacks(typingStopRun);
         handler.removeCallbacks(typingHideRun);
         handler.removeCallbacks(reloadRun);
@@ -658,40 +666,129 @@ public class Chat extends AppCompatActivity {
                 runOnUiThread(() -> Toast.makeText(this, "Could not read file", Toast.LENGTH_SHORT).show());
                 return;
             }
-            long cap_bytes = "image".equals(kind)
-                    ? AttachmentStore.MAX_IMAGE_BYTES : AttachmentStore.MAX_MEDIA_BYTES;
-            if (stored.length() > cap_bytes) {
-                final String limit = (cap_bytes / (1024 * 1024)) + " MB";
-                //noinspection ResultOfMethodCallIgnored
-                stored.delete();
-                runOnUiThread(() -> Toast.makeText(this,
-                        "File too large (limit " + limit + ")", Toast.LENGTH_LONG).show());
-                return;
-            }
-
-            final String storedPath = stored.getAbsolutePath();
-            final long nonce = repo.beginSend(chatDbKey, kind, null, mime, cap, storedPath, 0, null, null);
-            if (nonce <= 0) {
-                runOnUiThread(() -> Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show());
-                return;
-            }
-
-            try {
-                // 2. constant-memory streaming upload (REDESIGN §3.5)
-                String tsRaw = AttachmentStore.sendStreaming(baseSignal, myNumber, recipient,
-                        caption, mime, stored, null, null, null);
-                if (tsRaw != null) {
-                    repo.confirmSend(chatDbKey, nonce, tsRaw, kind, caption, null, mime, 0, null, null);
-                } else {
-                    repo.failSend(chatDbKey, nonce);
-                    runOnUiThread(() ->
-                            Toast.makeText(this, "Failed to send attachment", Toast.LENGTH_SHORT).show());
-                }
-            } catch (Exception e) {
-                repo.failSend(chatDbKey, nonce);
-                runOnUiThread(() -> Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show());
-            }
+            sendStoredFile(stored, mime, kind, cap);
         }).start();
+    }
+
+    /** Send an attachment already copied into the store. Blocking — call off
+     *  the main thread. Shared by the media picker and voice recording. */
+    private void sendStoredFile(java.io.File stored, String mime, String kind, String caption) {
+        final String recipient = notEmpty(peerNumber) ? peerNumber : peerUuid;
+        long cap_bytes = "image".equals(kind)
+                ? AttachmentStore.MAX_IMAGE_BYTES : AttachmentStore.MAX_MEDIA_BYTES;
+        if (stored.length() > cap_bytes) {
+            final String limit = (cap_bytes / (1024 * 1024)) + " MB";
+            //noinspection ResultOfMethodCallIgnored
+            stored.delete();
+            runOnUiThread(() -> Toast.makeText(this,
+                    "File too large (limit " + limit + ")", Toast.LENGTH_LONG).show());
+            return;
+        }
+
+        final String storedPath = stored.getAbsolutePath();
+        final long nonce = repo.beginSend(chatDbKey, kind, null, mime, caption, storedPath, 0, null, null);
+        if (nonce <= 0) {
+            runOnUiThread(() -> Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show());
+            return;
+        }
+
+        try {
+            // 2. constant-memory streaming upload (REDESIGN §3.5)
+            String tsRaw = AttachmentStore.sendStreaming(baseSignal, myNumber, recipient,
+                    caption == null ? "" : caption, mime, stored, null, null, null);
+            if (tsRaw != null) {
+                repo.confirmSend(chatDbKey, nonce, tsRaw, kind, caption, null, mime, 0, null, null);
+            } else {
+                repo.failSend(chatDbKey, nonce);
+                runOnUiThread(() ->
+                        Toast.makeText(this, "Failed to send attachment", Toast.LENGTH_SHORT).show());
+            }
+        } catch (Exception e) {
+            repo.failSend(chatDbKey, nonce);
+            runOnUiThread(() -> Toast.makeText(this, "Error: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+        }
+    }
+
+    // -------------------- VOICE MESSAGES --------------------
+
+    private android.media.MediaRecorder recorder;
+    private java.io.File recFile;
+
+    private void toggleRecording() {
+        if (recorder != null) { stopRecording(true); return; }
+        if (android.os.Build.VERSION.SDK_INT >= 23 && checkSelfPermission(
+                android.Manifest.permission.RECORD_AUDIO)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 102);
+            return;
+        }
+        try {
+            recFile = new java.io.File(getCacheDir(), "voice-" + System.currentTimeMillis() + ".m4a");
+            recorder = new android.media.MediaRecorder();
+            recorder.setAudioSource(android.media.MediaRecorder.AudioSource.MIC);
+            recorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4);
+            recorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC);
+            recorder.setAudioChannels(1);
+            recorder.setAudioSamplingRate(44100);
+            recorder.setAudioEncodingBitRate(64000);
+            recorder.setOutputFile(recFile.getAbsolutePath());
+            recorder.prepare();
+            recorder.start();
+            ImageButton mic = findViewById(R.id.btn_mic);
+            mic.setColorFilter(0xFFD32F2F);
+            EditText input = findViewById(R.id.input_message);
+            input.setHint("Recording… tap mic to send, hold to cancel");
+        } catch (Exception e) {
+            cleanupRecorder();
+            Toast.makeText(this, "Cannot record audio here", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void stopRecording(boolean sendIt) {
+        if (recorder == null) return;
+        try { recorder.stop(); } catch (Exception e) { sendIt = false; }
+        cleanupRecorder();
+        final java.io.File f = recFile;
+        recFile = null;
+        if (f == null) return;
+        if (!sendIt || f.length() < 1024) {
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            if (!sendIt) Toast.makeText(this, "Recording discarded", Toast.LENGTH_SHORT).show();
+            else Toast.makeText(this, "Too short — not sent", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new Thread(() -> {
+            AttachmentStore store = AttachmentStore.get(this);
+            java.io.File stored = store.importLocal(android.net.Uri.fromFile(f),
+                    "local-" + System.currentTimeMillis());
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();
+            if (stored == null) {
+                runOnUiThread(() -> Toast.makeText(this, "Could not save recording",
+                        Toast.LENGTH_SHORT).show());
+                return;
+            }
+            sendStoredFile(stored, "audio/mp4", "audio", null);
+        }).start();
+    }
+
+    private void cleanupRecorder() {
+        if (recorder != null) {
+            try { recorder.release(); } catch (Exception ignored) {}
+            recorder = null;
+        }
+        ImageButton mic = findViewById(R.id.btn_mic);
+        if (mic != null) mic.clearColorFilter();
+        EditText input = findViewById(R.id.input_message);
+        if (input != null) input.setHint("Message");
+    }
+
+    @Override public void onRequestPermissionsResult(int code, String[] perms, int[] grants) {
+        super.onRequestPermissionsResult(code, perms, grants);
+        if (code == 102 && grants.length > 0
+                && grants[0] == android.content.pm.PackageManager.PERMISSION_GRANTED)
+            toggleRecording();
     }
 
     // -------------------- MEDIA OPEN --------------------
@@ -744,6 +841,7 @@ public class Chat extends AppCompatActivity {
                     Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show();
                     return;
                 }
+                if (mime.startsWith("audio/")) { playAudioInline(f); return; }
                 try {
                     android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
                             this, getPackageName() + ".files", f);

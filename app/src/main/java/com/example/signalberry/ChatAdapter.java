@@ -110,7 +110,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     static class PeerTextVH extends RecyclerView.ViewHolder {
         final LinearLayout quoteBlock;
         final View quoteLine;
-        final TextView tvQuote, tvMessage, tvReactions;
+        final TextView tvQuote, tvMessage, tvReactions, tvTime;
         PeerTextVH(@NonNull View v) {
             super(v);
             quoteBlock  = v.findViewById(R.id.quoteBlock);
@@ -118,8 +118,10 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvQuote     = v.findViewById(R.id.tvQuote);
             tvMessage   = v.findViewById(R.id.tvMessage);
             tvReactions = v.findViewById(R.id.tvReactions);
+            tvTime      = v.findViewById(R.id.tvTime);
         }
         void bind(MessageItem m) {
+            bindPeerTime(m, tvTime);
             if (m.status == Chat.ST_REMOTE_DELETED) { bindDeleted(tvMessage, quoteBlock, tvReactions); return; }
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
             tvMessage.setTypeface(null, android.graphics.Typeface.NORMAL);
@@ -149,7 +151,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             }
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
             tvMessage.setTypeface(null, android.graphics.Typeface.NORMAL);
-            bindStatus(m.status, tvStatus);
+            bindStatus(m, tvStatus);
             bindQuote(m, quoteBlock, quoteLine, tvQuote);
             bindReactions(m, tvReactions);
         }
@@ -174,8 +176,11 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvMeta      = v.findViewById(R.id.tvMediaMeta);
             tvCaption   = v.findViewById(R.id.tvCaption);
             tvReactions = v.findViewById(R.id.tvReactions);
+            tvTime      = v.findViewById(R.id.tvTime);
         }
+        final TextView tvTime;
         void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
+            bindPeerTime(m, tvTime);
             bindMedia(m, loader, base, pos, l, iv, ivPlay, tvMeta);
             if (m.caption != null && !m.caption.isEmpty()) {
                 tvCaption.setText(m.caption);
@@ -210,7 +215,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         }
         void bind(MessageItem m, ImageLoader loader, String base, int pos, OnImageClickListener l) {
             bindMedia(m, loader, base, pos, l, iv, ivPlay, tvMeta);
-            bindStatus(m.status, tvStatus);
+            bindStatus(m, tvStatus);
             if (m.caption != null && !m.caption.isEmpty()) {
                 tvCaption.setText(m.caption);
                 tvCaption.setVisibility(View.VISIBLE);
@@ -312,15 +317,23 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     /** Tick states: pending dim ellipsis, sent single, delivered double (dim),
      *  read double (accent blue), failed red cross. Text glyphs (U+2713/2715)
      *  render fine on Android 4.3; clock/emoji glyphs do not. */
-    private static void bindStatus(int st, TextView tv) {
-        switch (st) {
-            case Chat.ST_PENDING:   tv.setText("\u2026");        tv.setTextColor(0xFF9E9E9E); break;
-            case Chat.ST_SENT:      tv.setText("\u2713");        tv.setTextColor(0xFF9E9E9E); break;
-            case Chat.ST_DELIVERED: tv.setText("\u2713\u2713"); tv.setTextColor(0xFF9E9E9E); break;
-            case Chat.ST_READ:      tv.setText("\u2713\u2713"); tv.setTextColor(0xFF2196F3); break;
+    private static void bindStatus(MessageItem m, TextView tv) {
+        String when = com.example.signalberry.Utils.formatBubbleTime(m.serverTs);
+        String at = when.isEmpty() ? "" : when + "  ";
+        switch (m.status) {
+            case Chat.ST_PENDING:   tv.setText("\u2026");             tv.setTextColor(0xFF9E9E9E); break;
+            case Chat.ST_SENT:      tv.setText(at + "\u2713");        tv.setTextColor(0xFF9E9E9E); break;
+            case Chat.ST_DELIVERED: tv.setText(at + "\u2713\u2713"); tv.setTextColor(0xFF9E9E9E); break;
+            case Chat.ST_READ:      tv.setText(at + "\u2713\u2713"); tv.setTextColor(0xFF2196F3); break;
             case Chat.ST_FAILED:    tv.setText("\u2715 failed \u2014 tap to retry"); tv.setTextColor(0xFFD32F2F); break;
-            default:                tv.setText("");
+            default:                tv.setText(at.trim());
         }
+    }
+
+    private static void bindPeerTime(MessageItem m, TextView tv) {
+        if (tv == null) return;
+        tv.setText(m.status == Chat.ST_REMOTE_DELETED ? ""
+                : com.example.signalberry.Utils.formatBubbleTime(m.serverTs));
     }
 
     // ---- media loader: shared executor, bounded decode, store-backed ----

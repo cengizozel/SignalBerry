@@ -79,6 +79,12 @@
             android:visibility="gone"/>
 
         <TextView
+            android:id="@+id/tvTime"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:textColor="@color/colorTextSecondary" android:textSize="11sp"
+            android:layout_marginTop="2dp"/>
+
+        <TextView
             android:id="@+id/tvReactions"
             android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:textSize="18sp"

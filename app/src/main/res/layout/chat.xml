@@ -6,12 +6,15 @@
     <RelativeLayout
         android:layout_width="match_parent"
         android:layout_height="56dp"
-        android:paddingStart="12dp" android:paddingEnd="12dp"
+        android:paddingEnd="12dp"
         android:background="@color/colorBackground">
 
+        <!-- generous hit box: full bar height, flush to the screen edge,
+             with the icon centered inside it -->
         <ImageButton
             android:id="@+id/btn_back"
-            android:layout_width="36dp" android:layout_height="36dp"
+            android:layout_width="64dp" android:layout_height="match_parent"
+            android:scaleType="center"
             android:layout_centerVertical="true"
             android:background="@android:color/transparent"
             android:src="@android:drawable/ic_media_previous"
@@ -301,6 +304,13 @@
             android:textColorHint="@color/colorTextMuted"
             android:background="@android:drawable/edit_text"
             android:padding="10dp"/>
+
+        <ImageButton
+            android:id="@+id/btn_mic"
+            android:layout_width="40dp" android:layout_height="40dp"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_btn_speak_now"
+            android:contentDescription="Record voice message" />
 
         <ImageButton
             android:id="@+id/btn_send"
