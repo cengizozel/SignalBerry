@@ -432,9 +432,9 @@ public class Messages extends AppCompatActivity {
                     : AppCompatDelegate.MODE_NIGHT_NO);
         });
         addToggle(row1, "✓✓", "Read receipts", "send_read_receipts", radius, primaryText, true, null);
-        addToggle(row2, "🐞", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
         addToggle(row2, "🔍", "Search bar", "show_search_bar", radius, primaryText, false,
                 this::applySearchBarVisibility);
+        addToggle(row2, "🐞", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
 
         // collapsible extras — rarely-used toggles live here
         final android.widget.LinearLayout extra = new android.widget.LinearLayout(this);
