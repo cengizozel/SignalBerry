@@ -325,20 +325,26 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     // ---- media loader: shared executor, bounded decode, store-backed ----
     static class ImageLoader {
-        private final LruCache<String, Bitmap> cache;
-        private final Context ctx;
-        private final java.util.concurrent.ExecutorService exec =
+        // process-wide: a per-Chat executor+cache leaked 2 threads per open and
+        // re-decoded everything on every reopen
+        private static final java.util.concurrent.ExecutorService exec =
                 java.util.concurrent.Executors.newFixedThreadPool(2);
+        private static LruCache<String, Bitmap> cache;
+        private final Context ctx;
         private static final int MAX_DIM = 640; // bubble cap on a 720px screen
 
         ImageLoader(Context ctx) {
             this.ctx = ctx.getApplicationContext();
-            final int maxKb = (int)(Runtime.getRuntime().maxMemory() / 1024);
-            cache = new LruCache<String, Bitmap>(maxKb / 8) {
-                @Override protected int sizeOf(String key, Bitmap value) {
-                    return value.getByteCount() / 1024;
+            synchronized (ImageLoader.class) {
+                if (cache == null) {
+                    final int maxKb = (int)(Runtime.getRuntime().maxMemory() / 1024);
+                    cache = new LruCache<String, Bitmap>(maxKb / 8) {
+                        @Override protected int sizeOf(String key, Bitmap value) {
+                            return value.getByteCount() / 1024;
+                        }
+                    };
                 }
-            };
+            }
         }
 
         void load(final String tag, final ImageView target, final String baseSignal) {
@@ -365,8 +371,13 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
         private Bitmap fetch(String tag, String baseSignal) {
             try {
-                if (tag.startsWith("vthumb-local:"))
-                    return videoThumb(java.io.File.createTempFile("x", null), tag.substring(13), true);
+                if (tag.startsWith("vthumb-local:")) {
+                    String loc = tag.substring(13);
+                    if (loc.startsWith("file://")) loc = loc.substring(7);
+                    if (loc.startsWith("/"))
+                        return videoThumb(new java.io.File(loc), null, false); // fd overload: mediaserver can't open our private paths
+                    return videoThumb(null, loc, true); // content:// — context overload
+                }
                 if (tag.startsWith("vthumb:")) {
                     String attId = tag.substring(7);
                     if (attId.isEmpty()) return null;
@@ -459,6 +470,16 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                     }
                     Bitmap frame = r.getFrameAtTime(-1);
                     if (frame == null) return null;
+                    // full video frames would dominate the Q10's small bitmap cache
+                    if (frame.getWidth() > MAX_DIM || frame.getHeight() > MAX_DIM) {
+                        float s = Math.min((float) MAX_DIM / frame.getWidth(),
+                                (float) MAX_DIM / frame.getHeight());
+                        Bitmap scaled = Bitmap.createScaledBitmap(frame,
+                                Math.max(1, (int) (frame.getWidth() * s)),
+                                Math.max(1, (int) (frame.getHeight() * s)), true);
+                        frame.recycle();
+                        frame = scaled;
+                    }
                     try (java.io.OutputStream os = new java.io.FileOutputStream(thumbFile)) {
                         frame.compress(Bitmap.CompressFormat.JPEG, 80, os);
                     }

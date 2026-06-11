@@ -46,6 +46,16 @@ final class Repo {
         return instance;
     }
 
+    /** Logout: drop the singleton so re-login gets a fresh DB handle/identity. */
+    static synchronized void reset() {
+        if (instance != null) {
+            try { instance.db.close(); } catch (Exception ignored) {}
+            instance.io.shutdown();
+            instance.reportIo.shutdown();
+            instance = null;
+        }
+    }
+
     final MessageDatabase db;
     private final PeerKeys peerKeys;
     private final SharedPreferences prefs;
@@ -91,11 +101,16 @@ final class Repo {
     private void rekeyWithPrefs(String uuidKey, String numberKey) {
         synchronized (writeLock) { db.rekeyPeer(uuidKey, numberKey); }
         synchronized (readTsLock) {
-            long uuidTs = prefs.getLong("read_ts_" + uuidKey, 0);
-            long numTs  = prefs.getLong("read_ts_" + numberKey, 0);
-            if (uuidTs > numTs)
-                prefs.edit().putLong("read_ts_" + numberKey, uuidTs).apply();
-            prefs.edit().remove("read_ts_" + uuidKey).apply();
+            SharedPreferences.Editor ed = prefs.edit();
+            for (String fam : new String[]{"read_ts_", "notified_ts_",
+                    "thread_cleared_ts_", "receipted_ts_"}) {
+                long u = prefs.getLong(fam + uuidKey, 0);
+                if (u > prefs.getLong(fam + numberKey, 0)) ed.putLong(fam + numberKey, u);
+                ed.remove(fam + uuidKey);
+            }
+            if (prefs.getBoolean("mute_" + uuidKey, false)) ed.putBoolean("mute_" + numberKey, true);
+            ed.remove("mute_" + uuidKey);
+            ed.apply();
         }
         notifyInserted(numberKey);
     }
@@ -103,16 +118,35 @@ final class Repo {
     /** The only writer of read_ts_ prefs — three components used to race here. */
     void advanceReadTs(String peerKey, long ts) {
         if (isEmpty(peerKey) || ts <= 0) return;
+        boolean advanced = false;
         synchronized (readTsLock) {
-            if (ts > prefs.getLong("read_ts_" + peerKey, 0))
+            if (ts > prefs.getLong("read_ts_" + peerKey, 0)) {
                 prefs.edit().putLong("read_ts_" + peerKey, ts).apply();
+                advanced = true;
+            }
+            // read implies notified — a reconnect must not re-notify read messages
+            if (ts > prefs.getLong("notified_ts_" + peerKey, 0))
+                prefs.edit().putLong("notified_ts_" + peerKey, ts).apply();
         }
-        sweepExpiry();
+        if (advanced) sweepExpiry();
+    }
+
+    void advanceNotifiedTs(String peerKey, long ts) {
+        if (isEmpty(peerKey) || ts <= 0) return;
+        synchronized (readTsLock) {
+            if (ts > prefs.getLong("notified_ts_" + peerKey, 0))
+                prefs.edit().putLong("notified_ts_" + peerKey, ts).apply();
+        }
     }
 
     /** Honor disappearing-message timers (REDESIGN exception now closed app-side;
      *  the bridge's copy is a documented follow-up). */
+    private volatile long lastSweepMs = 0;
+
     void sweepExpiry() {
+        long now = System.currentTimeMillis();
+        if (now - lastSweepMs < 30_000) return; // debounce: full-table scans are not free on a Q10
+        lastSweepMs = now;
         io.execute(() -> {
             try {
                 Map<String, Long> readTs = new HashMap<>();
@@ -601,18 +635,41 @@ final class Repo {
 
     List<MessageItem> getThread(String peerKey) { return db.getMessages(peerKey); }
 
+    List<MessageItem> getThreadFull(String peerKey) { return db.getMessages(peerKey, 0); }
+
+    /** App-originated edit: tell the bridge (no self-echo) so edit-revision
+     *  receipts find their target and other clients of the feed see the text. */
+    void reportEdit(String peerKey, long targetTs, String newText, long editTs) {
+        reportIo.execute(() -> {
+            try {
+                String base = prefs.getString("bridge", "");
+                if (isEmpty(base)) return;
+                JSONObject o = new JSONObject();
+                o.put("peer", peerKey);
+                o.put("server_ts", targetTs);
+                o.put("body", newText);
+                o.put("edited_ts", editTs);
+                httpPostJson(base + "/v2/sent", o.toString());
+            } catch (Exception e) {
+                DebugLog.log("edit report failed: " + e);
+            }
+        });
+    }
+
     /** Device-local thread wipe: rows gone entirely (no tombstones — the next
      *  catch-up would re-deliver, so also pin the cursor watermark forward). */
     void deleteThread(String peerKey) {
+        long maxTs;
         synchronized (writeLock) {
+            maxTs = db.getLastTs(peerKey); // pin to DATA, not the device clock —
+                                           // a fast clock would silently eat future messages
             db.getWritableDatabase().execSQL(
                     "DELETE FROM messages WHERE peer_key=?", new Object[]{peerKey});
         }
-        // suppress re-delivery from the change feed: mark everything read+notified
-        long now = System.currentTimeMillis();
-        advanceReadTs(peerKey, now);
-        prefs.edit().putLong("notified_ts_" + peerKey, now)
-                .putLong("thread_cleared_ts_" + peerKey, now).apply();
+        if (maxTs > 0) {
+            advanceReadTs(peerKey, maxTs);
+            prefs.edit().putLong("thread_cleared_ts_" + peerKey, maxTs).apply();
+        }
         notifyInserted(peerKey);
     }
 
@@ -638,6 +695,7 @@ final class Repo {
             long cursor = reconcile ? 0 : prefs.getLong("bridge_seq", 0);
             long reconcileTarget = -1;
             try {
+                reconcileConsumed.clear();
                 if (reconcile) {
                     // snapshot S: the reconcile is complete only when the drain
                     // verifiably reaches it; interruption restarts from seq 0
@@ -671,7 +729,9 @@ final class Repo {
                                 String peer = ingestBridgeRow(row, reconcile);
                                 if (notEmpty(peer)) touched.add(peer);
                                 if (notEmpty(peer) && !reconcile && "in".equals(row.optString("dir"))
-                                        && row.optLong("serverTs", 0) > prefs.getLong("notified_ts_" + peer, 0)) {
+                                        && row.optLong("serverTs", 0) > Math.max(
+                                                prefs.getLong("notified_ts_" + peer, 0),
+                                                prefs.getLong("read_ts_" + peer, 0))) {
                                     Object[] cur = missedIn.get(peer);
                                     long ts = row.optLong("serverTs", 0);
                                     String snip = row.optString("body", "");
@@ -700,8 +760,21 @@ final class Repo {
                         if (markers.length() >= PAGE)
                             markersBound = markers.optJSONObject(markers.length() - 1).optLong("modSeq", cursor);
                     }
-                    long maxSeq = o.optLong("max_seq", cursor);
-                    long next = Math.min(Math.min(itemsBound, markersBound), maxSeq);
+                    // §2.2: advance ONLY to the last RETURNED row's modSeq — max_seq
+                    // is informational; the bridge reads items/markers/meta in
+                    // separate snapshots, so trusting it can skip rows forever
+                    long lastReturned = cursor;
+                    if (items != null)
+                        for (int i = 0; i < items.length(); i++) {
+                            JSONObject r2 = items.optJSONObject(i);
+                            if (r2 != null) lastReturned = Math.max(lastReturned, r2.optLong("modSeq", 0));
+                        }
+                    if (markers != null)
+                        for (int i = 0; i < markers.length(); i++) {
+                            JSONObject m2 = markers.optJSONObject(i);
+                            if (m2 != null) lastReturned = Math.max(lastReturned, m2.optLong("modSeq", 0));
+                        }
+                    long next = Math.min(Math.min(itemsBound, markersBound), lastReturned);
                     for (String p : touched) notifyInserted(p);
                     if (next <= cursor) break;
                     cursor = next;
@@ -730,6 +803,7 @@ final class Repo {
     }
 
     private Map<String, Object[]> missedIn; // peer -> [count, maxTs, snippet]; guarded by catchUpLock
+    private final java.util.Set<Long> reconcileConsumed = new java.util.HashSet<>(); // guarded by catchUpLock
 
     /** Apply one /v2/changes row. Steady-state rules (REDESIGN §3.6): identity
      *  upsert; status=MAX; bridge body/edits/deletes adopt; local-only fields
@@ -763,11 +837,31 @@ final class Repo {
             // reconcile legs (§3.6 step 7): attachment first, then exact-text
             if (reconcile) {
                 if (notEmpty(attId)) {
+                    // attachment leg (§3.6.7.ii): re-timestamp a legacy media row
+                    // found by att_id so the upsert below dedups instead of twinning
                     long existing = db.findByAttachment(peer, dir, attId);
-                    // existing attachment row at a different legacy ts? adopt via
-                    // delete-and-upsert below (identity insert dedups), nothing to do
+                    if (existing >= 0) {
+                        android.database.sqlite.SQLiteDatabase d = db.getWritableDatabase();
+                        android.database.Cursor rc = d.rawQuery(
+                                "SELECT server_ts FROM messages WHERE id=?",
+                                new String[]{String.valueOf(existing)});
+                        long curTs = rc.moveToFirst() ? rc.getLong(0) : ts;
+                        rc.close();
+                        if (curTs != ts) {
+                            android.database.Cursor occ = d.rawQuery(
+                                    "SELECT id FROM messages WHERE peer_key=? AND dir=? AND server_ts=? AND att_id=?",
+                                    new String[]{peer, dir, String.valueOf(ts), attId});
+                            if (occ.moveToFirst()) {
+                                d.execSQL("DELETE FROM messages WHERE id=?", new Object[]{existing});
+                            } else {
+                                d.execSQL("UPDATE messages SET server_ts=? WHERE id=?",
+                                        new Object[]{ts, existing});
+                            }
+                            occ.close();
+                        }
+                    }
                 } else if (isText && notEmpty(body)) {
-                    db.adoptTimestamp(peer, dir, body, ts, 30_000);
+                    db.adoptTimestamp(peer, dir, body, ts, 30_000, reconcileConsumed);
                 }
             }
             // sent-attachment merge: our confirmed row may sit at att_id=''

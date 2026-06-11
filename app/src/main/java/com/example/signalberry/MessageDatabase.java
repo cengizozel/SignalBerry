@@ -466,20 +466,36 @@ class MessageDatabase extends SQLiteOpenHelper {
      *  local-clock row matched by exact text within the window. The exact-identity
      *  and attachment legs are handled by upsertByIdentity / attachment lookup in
      *  Repo. On adopt-collision, merge into the occupant. Returns true if adopted. */
-    boolean adoptTimestamp(String peerKey, String dir, String text, long bridgeTs, long windowMs) {
+    boolean adoptTimestamp(String peerKey, String dir, String text, long bridgeTs, long windowMs,
+                           java.util.Set<Long> consumed) {
         SQLiteDatabase db = getWritableDatabase();
+        // exact-first (§3.6.7): an already-correct row consumes itself — never
+        // steal a same-text sibling when the identity already exists
+        Cursor ex = db.rawQuery("SELECT id FROM " + T +
+                " WHERE peer_key=? AND dir=? AND server_ts=? AND att_id=''",
+                new String[]{peerKey, dir, String.valueOf(bridgeTs)});
+        if (ex.moveToFirst()) {
+            consumed.add(ex.getLong(0));
+            ex.close();
+            return false;
+        }
+        ex.close();
         Cursor c = db.rawQuery(
                 "SELECT id, server_ts, status FROM " + T +
                 " WHERE peer_key=? AND dir=? AND text=? AND att_id='' AND server_ts>0 AND server_ts!=? " +
-                " ORDER BY ABS(server_ts - ?) ASC LIMIT 1",
+                " ORDER BY ABS(server_ts - ?) ASC LIMIT 8",
                 new String[]{peerKey, dir, text == null ? "" : text,
                         String.valueOf(bridgeTs), String.valueOf(bridgeTs)});
-        if (!c.moveToFirst()) { c.close(); return false; }
-        long id = c.getLong(0);
-        long ts = c.getLong(1);
-        int status = c.getInt(2);
+        long id = -1, ts = 0;
+        int status = 0;
+        while (c.moveToNext()) {
+            if (consumed.contains(c.getLong(0))) continue; // each row matched at most once
+            id = c.getLong(0); ts = c.getLong(1); status = c.getInt(2);
+            break;
+        }
         c.close();
-        if (Math.abs(ts - bridgeTs) > windowMs) return false;
+        if (id < 0 || Math.abs(ts - bridgeTs) > windowMs) return false;
+        consumed.add(id);
         db.beginTransaction();
         try {
             Cursor occ = db.rawQuery("SELECT id FROM " + T +
@@ -537,7 +553,11 @@ class MessageDatabase extends SQLiteOpenHelper {
         while (d.moveToNext()) affected.add(d.getString(0));
         d.close();
         if (!affected.isEmpty())
-            db.execSQL("DELETE FROM " + T + " WHERE expire_at>0 AND expire_at<?",
+            // tombstone, not DELETE: a later receipt/reaction via the change feed
+            // would otherwise re-insert the "disappeared" message
+            db.execSQL("UPDATE " + T + " SET status=" + ST_DELETED + ", text='', caption=NULL, " +
+                    "local_uri=NULL, reactions=NULL, quote_text=NULL, edit_history=NULL, " +
+                    "expire_at=0, expire_s=0 WHERE expire_at>0 AND expire_at<?",
                     new Object[]{now});
         return affected;
     }
@@ -580,13 +600,20 @@ class MessageDatabase extends SQLiteOpenHelper {
         return ts;
     }
 
-    List<MessageItem> getMessages(String peerKey) {
+    List<MessageItem> getMessages(String peerKey) { return getMessages(peerKey, 300); }
+
+    /** Newest {limit} rows in chronological order (0 = all). A 3k-row thread
+     *  fully inflated per Repo event would bury the Q10. */
+    List<MessageItem> getMessages(String peerKey, int limit) {
+        String order = "CASE WHEN server_ts<0 THEN -server_ts ELSE server_ts END";
         Cursor c = getReadableDatabase().query(T, null,
                 "peer_key=? AND status!=" + ST_DELETED, new String[]{peerKey},
-                null, null, "CASE WHEN server_ts<0 THEN -server_ts ELSE server_ts END ASC, id ASC");
+                null, null, order + " DESC, id DESC",
+                limit > 0 ? String.valueOf(limit) : null);
         List<MessageItem> list = new ArrayList<>();
         while (c.moveToNext()) list.add(toItem(c));
         c.close();
+        java.util.Collections.reverse(list);
         return list;
     }
 

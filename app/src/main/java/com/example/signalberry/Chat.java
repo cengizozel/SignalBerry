@@ -268,6 +268,14 @@ public class Chat extends AppCompatActivity {
         findViewById(R.id.btn_chat_search).setOnClickListener(v -> {
             chatSearchBar.setVisibility(android.view.View.VISIBLE);
             chatSearchInput.requestFocus();
+            new Thread(() -> { // search needs the WHOLE history, not the 300-row page
+                final List<MessageItem> full = repo.getThreadFull(chatDbKey);
+                runOnUiThread(() -> {
+                    rawItems.clear();
+                    rawItems.addAll(full);
+                    rebuildDisplay();
+                });
+            }).start();
         });
         findViewById(R.id.btn_search_close).setOnClickListener(v -> closeSearch());
         findViewById(R.id.btn_search_up).setOnClickListener(v -> stepSearch(-1));
@@ -280,7 +288,8 @@ public class Chat extends AppCompatActivity {
             @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
             @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
             @Override public void afterTextChanged(android.text.Editable s) {
-                runSearch(s.toString());
+                handler.removeCallbacks(searchRun);
+                handler.postDelayed(searchRun, 250); // debounce keystrokes
             }
         });
 
@@ -859,6 +868,8 @@ public class Chat extends AppCompatActivity {
 
     // -------------------- in-chat search --------------------
 
+    private final Runnable searchRun = () -> runSearch(chatSearchInput.getText().toString());
+
     private void closeSearch() {
         chatSearchBar.setVisibility(android.view.View.GONE);
         chatSearchInput.setText("");
@@ -1099,6 +1110,7 @@ public class Chat extends AppCompatActivity {
                 runOnUiThread(() -> {
                     if (tsRaw != null) {
                         repo.applyLocalEdit(chatDbKey, prevTs, newText, newEditTs);
+                        repo.reportEdit(chatDbKey, prevTs, newText, newEditTs);
                     } else {
                         Toast.makeText(Chat.this, "Edit failed", Toast.LENGTH_SHORT).show();
                     }

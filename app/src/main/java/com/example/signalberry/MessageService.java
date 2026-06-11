@@ -61,8 +61,10 @@ public class MessageService extends Service {
                 startForeground(NOTIF_ID_FG, buildForegroundNotif());
             }
         } catch (Exception e) {
-            // Android 12+ may deny if the app is considered background at start
-            // time. Run without foreground status — fine while the app lives.
+            // Android 12+ denies foreground starts from the background; running
+            // on as a started-but-not-foreground service gets the process killed
+            // with "did not call startForeground" — stop cleanly instead.
+            if (Build.VERSION.SDK_INT >= 26) { stopSelf(); return START_NOT_STICKY; }
         }
         connect();
         return START_STICKY;
@@ -169,6 +171,7 @@ public class MessageService extends Service {
             if (isEmpty(name)) name = isEmpty(srcNum) ? shortUuid(srcUuid) : srcNum;
 
             showMessageNotif(r.peerKey, name, r.snippet, srcNum, srcUuid);
+            Repo.get(this).advanceNotifiedTs(r.peerKey, env.optLong("timestamp", 0));
         } catch (Exception ignored) {}
     }
 

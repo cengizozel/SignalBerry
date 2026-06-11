@@ -161,6 +161,7 @@ public class Messages extends AppCompatActivity {
 
         if (isEmpty(host) || isEmpty(myNumber)) {
             Toast.makeText(this, "Missing server IP or number", Toast.LENGTH_SHORT).show();
+            finish();
             return;
         }
 
@@ -208,6 +209,7 @@ public class Messages extends AppCompatActivity {
                                     .setMessage("Log out and wipe all local messages, media and caches from this device?")
                                     .setPositiveButton("Log out", (dd, ww) -> {
                                         stopService(new Intent(Messages.this, MessageService.class));
+                                        Repo.reset();
                                         android.app.NotificationManager nm = (android.app.NotificationManager)
                                                 getSystemService(NOTIFICATION_SERVICE);
                                         if (nm != null) nm.cancelAll();
