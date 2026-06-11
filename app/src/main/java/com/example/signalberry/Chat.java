@@ -494,7 +494,7 @@ public class Chat extends AppCompatActivity {
     /** The peer's safety number changed (new device/reinstall) — sends fail
      *  until the new identity is trusted. */
     private void promptTrustIdentity() {
-        new android.app.AlertDialog.Builder(this)
+        new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("Safety number changed")
                 .setMessage(peerName + "'s safety number has changed (they may have "
                         + "reinstalled Signal or switched devices). Trust the new "
@@ -526,7 +526,7 @@ public class Chat extends AppCompatActivity {
         final boolean isText = failed.type == MessageItem.TYPE_TEXT;
         if (isText && isEmpty(failed.text)) return;
         if (!isText && isEmpty(failed.localUri)) return; // media gone from store
-        new android.app.AlertDialog.Builder(this)
+        new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setMessage("Resend this message?")
                 .setPositiveButton("Resend", (d, w) -> {
                     repo.deleteLocal(chatDbKey, java.util.Collections.singletonList(oldKey));
@@ -975,109 +975,125 @@ public class Chat extends AppCompatActivity {
         }
 
         String myCurrentReaction = (m.reactions != null) ? m.reactions.get("me") : null;
-
-        String[] emojis = {"👍", "❤️", "😂", "😮", "😢", "👎", "🙏", "🎉"};
-        android.widget.LinearLayout emojiRow = new android.widget.LinearLayout(this);
-        emojiRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-        emojiRow.setGravity(android.view.Gravity.CENTER);
-        emojiRow.setPadding(16, 24, 16, 8);
-
-        android.widget.LinearLayout container = new android.widget.LinearLayout(this);
-        container.setOrientation(android.widget.LinearLayout.VERTICAL);
-        container.addView(emojiRow);
-
         boolean canEdit = "me".equals(m.from) && m.type == MessageItem.TYPE_TEXT && m.serverTs > 0;
         boolean selfThread = notEmpty(myNumber) && notEmpty(peerNumber)
                 && digits(myNumber).equals(digits(peerNumber));
         boolean canRemoteDelete = "me".equals(m.from) && m.serverTs > 0 && !selfThread
                 && System.currentTimeMillis() - m.serverTs < 24L * 3600 * 1000;
+        String copyable = m.type == MessageItem.TYPE_TEXT ? m.text : m.caption;
 
-        android.app.AlertDialog[] ref = {null};
+        android.widget.LinearLayout container = new android.widget.LinearLayout(this);
+        container.setOrientation(android.widget.LinearLayout.VERTICAL);
+        container.setPadding(dpC(10), dpC(12), dpC(10), dpC(10));
+
+        final androidx.appcompat.app.AlertDialog[] ref = {null};
+
+        // reactions: evenly weighted so all 8 always fit; 😲 not 😮 (6.1 = tofu here)
+        String[] emojis = {"👍", "❤️", "😂", "😲", "😢", "👎", "🙏", "🎉"};
+        android.widget.LinearLayout emojiRow = new android.widget.LinearLayout(this);
+        emojiRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
         for (String e : emojis) {
             android.widget.TextView tv = new android.widget.TextView(this);
             tv.setText(e);
-            tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 28);
-            tv.setPadding(12, 8, 12, 8);
-            if (e.equals(myCurrentReaction)) tv.setBackgroundColor(0x33000000);
+            tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 22);
+            tv.setGravity(android.view.Gravity.CENTER);
+            tv.setPadding(0, dpC(8), 0, dpC(8));
+            android.widget.LinearLayout.LayoutParams elp =
+                    new android.widget.LinearLayout.LayoutParams(0,
+                            android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            tv.setLayoutParams(elp);
+            if (e.equals(myCurrentReaction)) {
+                android.graphics.drawable.GradientDrawable sel =
+                        new android.graphics.drawable.GradientDrawable();
+                sel.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+                sel.setColor(0x332196F3);
+                tv.setBackground(sel);
+            }
             tv.setOnClickListener(v -> {
-                boolean remove = e.equals(myCurrentReaction);
-                sendReaction(e, m, remove);
+                sendReaction(e, m, e.equals(myCurrentReaction));
                 if (ref[0] != null) ref[0].dismiss();
             });
             emojiRow.addView(tv);
         }
+        container.addView(emojiRow);
 
-        if (canEdit || canRemoteDelete) {
-            android.widget.LinearLayout actionRow = new android.widget.LinearLayout(this);
-            actionRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
-            actionRow.setGravity(android.view.Gravity.CENTER);
-            actionRow.setPadding(16, 4, 16, 16);
+        android.view.View div = new android.view.View(this);
+        android.widget.LinearLayout.LayoutParams dlp = new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, dpC(1));
+        dlp.setMargins(dpC(4), dpC(10), dpC(4), dpC(6));
+        div.setLayoutParams(dlp);
+        div.setBackgroundColor(0x33808080);
+        container.addView(div);
 
-            if (canEdit) {
-                android.widget.Button btnEdit = new android.widget.Button(this);
-                btnEdit.setText("✏ Edit");
-                btnEdit.setOnClickListener(v -> {
-                    if (ref[0] != null) ref[0].dismiss();
-                    showEditDialog(m);
-                });
-                actionRow.addView(btnEdit);
-            }
-
-            if (canEdit && m.editHistory != null) {
-                android.widget.Button btnHist = new android.widget.Button(this);
-                btnHist.setText("📋 History");
-                btnHist.setOnClickListener(v -> {
-                    if (ref[0] != null) ref[0].dismiss();
-                    showEditHistory(m);
-                });
-                actionRow.addView(btnHist);
-            }
-            if (canRemoteDelete) {
-                android.widget.Button btnRd = new android.widget.Button(this);
-                btnRd.setText("🗑 Everyone");
-                btnRd.setOnClickListener(v -> {
-                    if (ref[0] != null) ref[0].dismiss();
-                    confirmRemoteDelete(m);
-                });
-                actionRow.addView(btnRd);
-            }
-            container.addView(actionRow);
-        }
-
-        String copyable = m.type == MessageItem.TYPE_TEXT ? m.text : m.caption;
+        addMenuRow(container, ref, "↩  Reply", 0xFF2196F3, () -> doReply(displayPos));
         if (notEmpty(copyable)) {
-            android.widget.Button btnCopy = new android.widget.Button(this);
-            btnCopy.setText("📄 Copy");
-            btnCopy.setOnClickListener(v -> {
+            final String toCopy = copyable;
+            addMenuRow(container, ref, "📋  Copy", 0xFF2196F3, () -> {
                 android.content.ClipboardManager cm = (android.content.ClipboardManager)
                         getSystemService(CLIPBOARD_SERVICE);
                 if (cm != null) {
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("message", copyable));
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("message", toCopy));
                     Toast.makeText(Chat.this, "Copied", Toast.LENGTH_SHORT).show();
                 }
-                if (ref[0] != null) ref[0].dismiss();
             });
-            android.widget.LinearLayout copyRow = new android.widget.LinearLayout(this);
-            copyRow.setGravity(android.view.Gravity.CENTER);
-            copyRow.addView(btnCopy);
-            container.addView(copyRow);
         }
+        if (canEdit) {
+            addMenuRow(container, ref, "✏  Edit", 0xFF2196F3, () -> showEditDialog(m));
+            if (m.editHistory != null)
+                addMenuRow(container, ref, "≡  Edit history", 0xFF2196F3, () -> showEditHistory(m));
+        }
+        addMenuRow(container, ref, "✓  Select", 0xFF2196F3, () -> enterSelectionMode(m.serverTs));
+        if (canRemoteDelete)
+            addMenuRow(container, ref, "×  Delete for everyone", 0xFFFF9800,
+                    () -> confirmRemoteDelete(m));
+        addMenuRow(container, ref, "×  Delete", 0xFFD32F2F, () -> confirmDeleteSingle(m.serverTs));
 
-        ref[0] = new android.app.AlertDialog.Builder(this)
-                .setView(container)
-                .setPositiveButton("Delete", (d, w) -> confirmDeleteSingle(m.serverTs))
-                .setNeutralButton("Reply", (d, w) -> doReply(displayPos))
-                .setNegativeButton("Select", (d, w) -> enterSelectionMode(m.serverTs))
-                .show();
-        ref[0].getButton(android.app.AlertDialog.BUTTON_POSITIVE)
-                .setTextColor(0xFFD32F2F);
+        ref[0] = new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setView(wrapMenuScroll(container))
+                .create();
+        ref[0].show();
+    }
+
+    private void addMenuRow(android.widget.LinearLayout parent,
+                            androidx.appcompat.app.AlertDialog[] ref,
+                            String label, int color, Runnable action) {
+        android.widget.TextView tv = new android.widget.TextView(this);
+        tv.setText(label);
+        tv.setTextSize(15);
+        tv.setTextColor(color);
+        tv.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        tv.setPadding(dpC(14), dpC(12), dpC(14), dpC(12));
+        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
+        g.setCornerRadius(dpC(8));
+        g.setColor(0x14808080);
+        tv.setBackground(g);
+        android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(dpC(2), dpC(3), dpC(2), dpC(3));
+        tv.setLayoutParams(lp);
+        tv.setOnClickListener(v -> {
+            if (ref[0] != null) ref[0].dismiss();
+            action.run();
+        });
+        parent.addView(tv);
+    }
+
+    private android.widget.ScrollView wrapMenuScroll(android.view.View child) {
+        android.widget.ScrollView s = new android.widget.ScrollView(this);
+        s.addView(child);
+        return s;
+    }
+
+    private int dpC(int dp) {
+        return (int) (dp * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private void showEditDialog(MessageItem m) {
         android.widget.EditText input = new android.widget.EditText(this);
         input.setText(m.text);
         input.setSelection(m.text == null ? 0 : m.text.length());
-        new android.app.AlertDialog.Builder(this)
+        new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("Edit message")
                 .setView(input)
                 .setPositiveButton("Save", (d, w) -> {
@@ -1096,7 +1112,7 @@ public class Chat extends AppCompatActivity {
                 sb.append("v").append(i + 1).append(": ").append(hist.getString(i));
                 if (i < hist.length() - 1) sb.append("\n\n");
             }
-            new android.app.AlertDialog.Builder(this)
+            new androidx.appcompat.app.AlertDialog.Builder(this)
                     .setTitle("Edit history")
                     .setMessage(sb.toString())
                     .setPositiveButton("OK", null)
@@ -1132,7 +1148,7 @@ public class Chat extends AppCompatActivity {
     }
 
     private void confirmRemoteDelete(MessageItem m) {
-        new android.app.AlertDialog.Builder(this)
+        new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setMessage("Delete this message for everyone?")
                 .setPositiveButton("Delete", (d, w) -> new Thread(() -> {
                     try {
@@ -1180,7 +1196,7 @@ public class Chat extends AppCompatActivity {
     }
 
     private void confirmDeleteSingle(long ts) {
-        new android.app.AlertDialog.Builder(this)
+        new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setMessage("Delete this message?")
                 .setPositiveButton("Delete", (d, w) ->
                         repo.deleteLocal(chatDbKey, java.util.Collections.singletonList(ts)))
@@ -1190,7 +1206,7 @@ public class Chat extends AppCompatActivity {
 
     private void confirmDeleteSelected() {
         int count = selectedTs.size();
-        new android.app.AlertDialog.Builder(this)
+        new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setMessage("Delete " + count + " message" + (count == 1 ? "" : "s") + "?")
                 .setPositiveButton("Delete", (d, w) -> {
                     repo.deleteLocal(chatDbKey, new ArrayList<>(selectedTs));

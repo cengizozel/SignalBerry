@@ -60,7 +60,7 @@ public class PlayerActivity extends AppCompatActivity {
         final Uri playUri = uri;
         video.setOnErrorListener((mp, what, extra) -> {
             // likely an unsupported H.264 profile on this device's decoder
-            new android.app.AlertDialog.Builder(this)
+            new androidx.appcompat.app.AlertDialog.Builder(this)
                     .setMessage("This video can't be played here (codec not supported on this device).")
                     .setPositiveButton("Open with…", (d, w) -> {
                         try {

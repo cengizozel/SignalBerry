@@ -6,7 +6,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
 import android.text.TextWatcher;
-import android.app.AlertDialog;
+import androidx.appcompat.app.AlertDialog;
 import android.content.Intent;
 import android.os.Build;
 import android.graphics.Bitmap;
@@ -415,7 +415,7 @@ public class Messages extends AppCompatActivity {
         root.addView(row1);
         root.addView(row2);
 
-        final android.app.AlertDialog dlg = new AlertDialog.Builder(this)
+        final AlertDialog dlg = new AlertDialog.Builder(this)
                 .setTitle("Settings")
                 .setView(wrapScroll(root))
                 .setNegativeButton("Close", null)
