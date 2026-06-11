@@ -96,23 +96,27 @@ class MessagesAdapter extends BaseAdapter {
             initials = initialsCircle(name, sizePx);
             BIND_CACHE.put("init|" + initialsKey, initials);
         }
+        // gate on having an avatar to FETCH (avatar_path = the contact's uuid),
+        // not on a phone number — number-privacy contacts have no number but
+        // still have a fetchable stock/uploaded photo. Cache + view tag key off
+        // that uuid so number-less contacts don't all collide on one "av|" key.
+        final String path = avatarPath;
         ivAvatar.setImageBitmap(initials);
-        ivAvatar.setTag(number);
+        ivAvatar.setTag(path);
 
-        if (!demoMode && avatarCache != null && number != null && !number.isEmpty()) {
-            final String tag = number;
-            final String path = avatarPath;
-            Bitmap cachedCircle = BIND_CACHE.get("av|" + number);
+        if (!demoMode && avatarCache != null && path != null && !path.isEmpty()) {
+            Bitmap cachedCircle = BIND_CACHE.get("av|" + path);
             if (cachedCircle != null) {
                 ivAvatar.setImageBitmap(cachedCircle);
             } else {
+                final String num = number;
                 BIND_EXEC.execute(() -> {
-                    Bitmap raw = avatarCache.fetch(number, path);
+                    Bitmap raw = avatarCache.fetch(num, path);
                     if (raw == null) return;
                     Bitmap circle = circleCrop(raw, sizePx);
-                    BIND_CACHE.put("av|" + number, circle);
+                    BIND_CACHE.put("av|" + path, circle);
                     handler.post(() -> {
-                        if (tag.equals(ivAvatar.getTag())) {
+                        if (path.equals(ivAvatar.getTag())) {
                             ivAvatar.setImageBitmap(circle);
                         }
                     });

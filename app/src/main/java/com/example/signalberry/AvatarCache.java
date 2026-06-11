@@ -47,13 +47,12 @@ class AvatarCache {
      * May block on network — call from a background thread.
      */
     Bitmap fetch(String number, String avatarUuid) {
+        if (avatarUuid == null || avatarUuid.isEmpty()) return null;
+        // cache key: digits of the number when present, else the avatar uuid —
+        // number-privacy contacts have no number but a real fetchable avatar,
+        // and an empty key would collapse them all onto one broken cache file.
         String key = Utils.digits(number);
-        if (key.isEmpty()) key = number;
-
-        if (avatarUuid == null || avatarUuid.isEmpty()) {
-            log("no avatar for " + key);
-            return null;
-        }
+        if (key.isEmpty()) key = avatarUuid;
 
         synchronized (mem) {
             if (mem.containsKey(key)) return mem.get(key);
