@@ -206,10 +206,19 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvSpeed     = v.findViewById(R.id.tvSpeed);
             tvStamp     = v.findViewById(R.id.tvStamp);
             tvReactions = v.findViewById(R.id.tvReactions);
-            // me-bubble bg is dark blue: white bars read better than blue
-            if (me) wave.setColors(0xFFFFFFFF, 0x66FFFFFF);
-            else    wave.setColors(0xFF2196F3, 0x66888888);
-            iconColor = me ? 0xFFFFFFFF : 0xFF2196F3;
+            // the me-bubble flips light-blue (light) / dark-blue (night), so
+            // the transport colors must flip with it or they wash out
+            boolean night = (v.getResources().getConfiguration().uiMode
+                    & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                    == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+            if (me) {
+                iconColor = night ? 0xFFFFFFFF : 0xFF1565C0;
+                wave.setColors(iconColor, night ? 0x66FFFFFF : 0x4D1565C0);
+            } else {
+                iconColor = 0xFF2196F3;
+                wave.setColors(iconColor, 0x66888888);
+            }
+            tvSpeed.setTextColor(iconColor);
         }
 
         /** Icons drawn in code — the device font has no reliable pause glyph. */
