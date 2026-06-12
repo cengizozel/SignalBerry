@@ -495,8 +495,8 @@ public class Messages extends AppCompatActivity {
         addToggle(row2, "🔍", "Search bar", "show_search_bar", radius, primaryText, false,
                 this::applySearchBarVisibility);
         addToggle(row2, "🐞", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
-        // ⏎ U+23CE is a 6.0 symbol the BB10 font renders
-        addToggle(row3, "⏎", "Enter sends", "enter_sends", radius, primaryText, false, null);
+        // ↩ U+21A9 (return arrow) is in the BB10 emoji font; ⏎/↵ are tofu
+        addToggle(row3, "↩", "Enter sends", "enter_sends", radius, primaryText, false, null);
 
         // collapsible extras — rarely-used toggles live here
         final android.widget.LinearLayout extra = new android.widget.LinearLayout(this);
