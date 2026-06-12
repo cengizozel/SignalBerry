@@ -40,8 +40,7 @@ public class ServerConnect extends AppCompatActivity {
         EditText tokenField     = findViewById(R.id.input_bridge_token);
         EditText cfIdField      = findViewById(R.id.input_cf_id);
         EditText cfSecretField  = findViewById(R.id.input_cf_secret);
-        final android.view.View remoteSection = findViewById(R.id.remote_section);
-        final android.widget.TextView remoteToggle = findViewById(R.id.remote_toggle);
+        final android.widget.CheckBox hasTokenBox = findViewById(R.id.cb_has_token);
         final android.view.View cfSection = findViewById(R.id.cf_section);
         final android.widget.TextView cfToggle = findViewById(R.id.cf_toggle);
 
@@ -53,10 +52,25 @@ public class ServerConnect extends AppCompatActivity {
         cfIdField.setText(prefs.getString("cf_access_id", ""));
         cfSecretField.setText(prefs.getString("cf_access_secret", ""));
 
-        boolean hasRemote = notEmpty(prefs.getString("bridge_token", ""))
-                || notEmpty(prefs.getString("bridge_url_pref", ""));
+        // the bridge token field appears only when the user says they have one
+        boolean hasToken = notEmpty(prefs.getString("bridge_token", ""));
+        hasTokenBox.setChecked(hasToken);
+        tokenField.setVisibility(hasToken ? android.view.View.VISIBLE : android.view.View.GONE);
+        hasTokenBox.setOnCheckedChangeListener((b, checked) ->
+                tokenField.setVisibility(checked ? android.view.View.VISIBLE : android.view.View.GONE));
+
+        findViewById(R.id.token_info).setOnClickListener(t ->
+                new androidx.appcompat.app.AlertDialog.Builder(this)
+                        .setTitle("Bridge token")
+                        .setMessage("A password you set on your server (SB_AUTH_TOKEN) so only "
+                                + "you can reach it. Strongly recommended when your server is "
+                                + "exposed to the internet.\n\n"
+                                + "Set it on the server, then check this box and enter the same "
+                                + "value here. On a trusted home network you can leave it off.")
+                        .setPositiveButton("Got it", null)
+                        .show());
+
         boolean hasCf = notEmpty(prefs.getString("cf_access_id", ""));
-        wireSection(remoteToggle, remoteSection, "Remote access", hasRemote);
         wireSection(cfToggle, cfSection, "Cloudflare Access (optional)", hasCf);
 
         connectBtn.setOnClickListener(v -> {
@@ -64,75 +78,84 @@ public class ServerConnect extends AppCompatActivity {
             String numberInput = numberField.getText().toString().trim();
             String bridgeUrl = bridgeUrlField.getText().toString().trim();
 
-            // inline required-field validation (highlights the offending boxes)
-            ipField.setError(null);
-            numberField.setError(null);
-            bridgeUrlField.setError(null);
-            boolean valid = true;
+            // Hard-require the three addressing/identity fields (you cannot send
+            // a request without them). The token's correctness is decided by the
+            // server's actual 401 below, never by a client-side guess: client
+            // checks are UX, the server is the security boundary.
+            ipField.setError(null); numberField.setError(null);
+            bridgeUrlField.setError(null); tokenField.setError(null);
             android.widget.EditText firstBad = null;
-            if (ip.isEmpty())          { ipField.setError("Required");     firstBad = ipField;     valid = false; }
-            if (numberInput.isEmpty()) { numberField.setError("Required"); if (firstBad == null) firstBad = numberField; valid = false; }
-            // a token or an https server means remote, so a bridge address is needed
-            boolean remote = notEmpty(tokenField.getText().toString())
-                    || notEmpty(cfIdField.getText().toString())
-                    || ip.startsWith("https://");
-            if (remote && bridgeUrl.isEmpty()) {
-                wireSection(remoteToggle, remoteSection, "Remote access", true); // expand it
-                bridgeUrlField.setError("Required for remote");
-                if (firstBad == null) firstBad = bridgeUrlField;
-                valid = false;
-            }
-            if (!valid) { if (firstBad != null) firstBad.requestFocus(); return; }
+            if (ip.isEmpty())          { ipField.setError("Required"); firstBad = ipField; }
+            if (numberInput.isEmpty()) { numberField.setError("Required"); if (firstBad == null) firstBad = numberField; }
+            if (bridgeUrl.isEmpty())   { bridgeUrlField.setError("Required"); if (firstBad == null) firstBad = bridgeUrlField; }
+            if (firstBad != null) { firstBad.requestFocus(); return; }
 
-            // persist + activate creds first; the verify calls below go through
-            // Cloudflare for remote and need the headers
+            // a token is sent only when the box is checked
+            String token = hasTokenBox.isChecked() ? tokenField.getText().toString().trim() : "";
             prefs.edit()
                     .putString("bridge_url_pref", bridgeUrl)
-                    .putString("bridge_token", tokenField.getText().toString().trim())
+                    .putString("bridge_token", token)
                     .putString("cf_access_id", cfIdField.getText().toString().trim())
                     .putString("cf_access_secret", cfSecretField.getText().toString().trim())
                     .apply();
             Auth.load(prefs);
 
             connectBtn.setEnabled(false);
+            final String base = normalizeBase(ip);
+            final String bridgeBase = normalizeBase(bridgeUrl);
             new Thread(() -> {
-                boolean ok = false;
+                String errField = null, errMsg = null;
                 String canonicalNumber = null;
-                try {
-                    String base = normalizeBase(ip);
 
-                    // 1) Health
-                    int health = httpCodeGet(base + "/v1/health");
-                    if (health != 200 && health != 204) throw new RuntimeException("Health check failed: " + health);
+                // 1) signal-cli reachable + authorized (401 = bad/missing token)
+                int health;
+                try { health = httpCodeGet(base + "/v1/health"); } catch (Exception e) { health = -1; }
+                if (health == 401 || health == 403) { errField = "token"; errMsg = "Unauthorized, check token"; }
+                else if (health != 200 && health != 204) { errField = "ip"; errMsg = "Server not reachable"; }
 
-                    // 2) Accounts
-                    String accountsJson = httpGet(base + "/v1/accounts");
-                    canonicalNumber = findMatchingAccount(accountsJson, numberInput);
-                    if (canonicalNumber == null) {
-                        throw new RuntimeException("Number not linked on server");
-                    }
-
-                    ok = true;
-                } catch (Exception ignored) {
-                    ok = false;
+                // 2) number linked on the server
+                if (errField == null) {
+                    try {
+                        canonicalNumber = findMatchingAccount(httpGet(base + "/v1/accounts"), numberInput);
+                        if (canonicalNumber == null) { errField = "number"; errMsg = "Number not linked on server"; }
+                    } catch (Exception e) { errField = "ip"; errMsg = "Server not reachable"; }
                 }
 
-                String finalCanonical = canonicalNumber;
-                boolean finalOk = ok;
+                // 3) bridge reachable + authorized. Catches both a wrong token
+                //    (401) and a wrong/missing bridge address (unreachable), so
+                //    there is no need to guess whether the field was "required".
+                if (errField == null) {
+                    int bh;
+                    try { bh = httpCodeGet(bridgeBase + "/health"); } catch (Exception e) { bh = -1; }
+                    if (bh == 401 || bh == 403) { errField = "token"; errMsg = "Unauthorized, check token"; }
+                    else if (bh != 200) { errField = "bridge"; errMsg = "Bridge not reachable"; }
+                }
+
+                final String fErr = errField;
+                final String[] fMsg2 = { errMsg };
+                final String canon = canonicalNumber;
                 runOnUiThread(() -> {
                     connectBtn.setEnabled(true);
-                    if (finalOk) {
-                        String bridgeBase = notEmpty(bridgeUrl)
-                                ? normalizeBase(bridgeUrl) : deriveBridgeBase(ip);
+                    if (fErr == null) {
                         prefs.edit()
                                 .putString("ip", ip)
-                                .putString("number", finalCanonical != null ? finalCanonical : numberInput)
+                                .putString("number", canon != null ? canon : numberInput)
                                 .putString("bridge", bridgeBase)
                                 .apply();
                         startActivity(new Intent(ServerConnect.this, Messages.class));
-                    } else {
-                        Toast.makeText(this, "Could not verify server/number", Toast.LENGTH_SHORT).show();
+                        return;
                     }
+                    // a 401 with the box unchecked means the server wants a token
+                    // the user has not provided, so reveal the field to fix it
+                    if ("token".equals(fErr) && !hasTokenBox.isChecked()) {
+                        hasTokenBox.setChecked(true);
+                        fMsg2[0] = "Your server requires a token";
+                    }
+                    android.widget.EditText f = "token".equals(fErr) ? tokenField
+                            : "number".equals(fErr) ? numberField
+                            : "bridge".equals(fErr) ? bridgeUrlField : ipField;
+                    f.setError(fMsg2[0]);
+                    f.requestFocus();
                 });
             }).start();
         });
