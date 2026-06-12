@@ -102,7 +102,7 @@ For the deeper design rationale, see [docs/REDESIGN.md](docs/REDESIGN.md).
   and mark as read on open.
 - Light and dark mode.
 
-## Setup (home network)
+## Setup
 
 You need the two Docker containers running on a machine your phone can reach.
 The [bridge repo](https://github.com/cengizozel/SignalBerryBridge) ships a
@@ -117,7 +117,8 @@ echo "SIGNAL_NUMBER=+12223334444" > .env
 docker compose up -d --build
 ```
 
-This brings up `signal-api` on port 5000 and `signal-bridge` on port 9099.
+This brings up `signal-api` (signal-cli-rest-api) on port 5000 and `signal-bridge`
+on port 9099.
 
 **2. Link your Signal account.** Open this on the Docker host and scan the QR
 from your phone under Signal, Settings, Linked Devices, the plus button:
@@ -132,25 +133,41 @@ Confirm it linked:
 curl http://YOUR_HOST:5000/v1/accounts
 ```
 
-**3. Connect the app.** Install the APK, open SignalBerry, and on the connect
-screen enter:
+**3. Connect the app.** Install the APK, open SignalBerry, and fill in the connect
+screen. What you enter depends on whether your phone is on the same network as the
+server or reaching it over the internet.
+
+On your home network, point the app straight at the services:
 
 - **Your Signal number** in E.164 format, for example `+12223334444`.
 - **signal-cli URL**: `YOUR_HOST:5000`
 - **Bridge URL**: `YOUR_HOST:9099`
+- Leave the bridge token unchecked.
 
-Leave the bridge token unchecked for a trusted home network, then tap Connect.
+Over the internet, do not expose port 5000 directly. See the next section, then
+enter your public addresses and check the bridge token box. Tap Connect.
 
-## Using it away from home
+### Ports, and using it away from home
 
-The home setup above only works on your own WiFi. To use SignalBerry over the
-internet, you expose the two services through any transport you like (a Cloudflare
-Tunnel is the practical choice on BlackBerry, since the device cannot run a VPN),
-and you protect them with a shared token. The full walkthrough, including the
-token, the auth proxy, and an optional Cloudflare Access layer, is in the bridge
-repo at [docs/REMOTE_ACCESS.md](https://github.com/cengizozel/SignalBerryBridge/blob/main/docs/REMOTE_ACCESS.md).
-When you go remote you fill in the same connect screen with your public addresses
-and check the bridge token box.
+There are two ways to reach signal-cli, and the difference is authentication:
+
+- **Port 5000** is signal-cli-rest-api itself, with no authentication. Anything
+  that can reach it can send and read your messages, so use it only on a trusted
+  home network.
+- **Port 5001** is a bundled auth proxy that sits in front of signal-cli and checks
+  a shared token, forwarding only valid requests through to it. This is the one you
+  expose to the internet, never 5000. (5001 is the default; if that port is already
+  taken on your machine, set `API_AUTH_PORT` and use that value instead.)
+
+The bridge on port 9099 is separate and has its own built-in token check, so it
+needs no proxy.
+
+So at home you point the app at `5000` and `9099` with no token. To go remote you
+expose the proxy and the bridge through any transport you like (a Cloudflare Tunnel
+is the practical choice on BlackBerry, since the device cannot run a VPN), then
+point the app at those public addresses with the bridge token checked. The full
+walkthrough, including the token, the proxy, the tunnel, and an optional Cloudflare
+Access layer, is in the bridge repo at [docs/REMOTE_ACCESS.md](https://github.com/cengizozel/SignalBerryBridge/blob/main/docs/REMOTE_ACCESS.md).
 
 ## Security and privacy
 
