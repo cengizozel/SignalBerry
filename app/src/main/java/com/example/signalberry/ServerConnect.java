@@ -62,14 +62,30 @@ public class ServerConnect extends AppCompatActivity {
         connectBtn.setOnClickListener(v -> {
             String ip = ipField.getText().toString().trim();
             String numberInput = numberField.getText().toString().trim();
-            if (ip.isEmpty() || numberInput.isEmpty()) {
-                Toast.makeText(this, "Enter server IP and your Signal number", Toast.LENGTH_SHORT).show();
-                return;
-            }
-
-            // persist + activate creds first — the verify calls below go through
-            // Cloudflare for remote and need the headers
             String bridgeUrl = bridgeUrlField.getText().toString().trim();
+
+            // inline required-field validation (highlights the offending boxes)
+            ipField.setError(null);
+            numberField.setError(null);
+            bridgeUrlField.setError(null);
+            boolean valid = true;
+            android.widget.EditText firstBad = null;
+            if (ip.isEmpty())          { ipField.setError("Required");     firstBad = ipField;     valid = false; }
+            if (numberInput.isEmpty()) { numberField.setError("Required"); if (firstBad == null) firstBad = numberField; valid = false; }
+            // a token or an https server means remote, so a bridge address is needed
+            boolean remote = notEmpty(tokenField.getText().toString())
+                    || notEmpty(cfIdField.getText().toString())
+                    || ip.startsWith("https://");
+            if (remote && bridgeUrl.isEmpty()) {
+                wireSection(remoteToggle, remoteSection, "Remote access", true); // expand it
+                bridgeUrlField.setError("Required for remote");
+                if (firstBad == null) firstBad = bridgeUrlField;
+                valid = false;
+            }
+            if (!valid) { if (firstBad != null) firstBad.requestFocus(); return; }
+
+            // persist + activate creds first; the verify calls below go through
+            // Cloudflare for remote and need the headers
             prefs.edit()
                     .putString("bridge_url_pref", bridgeUrl)
                     .putString("bridge_token", tokenField.getText().toString().trim())
