@@ -190,10 +190,21 @@ final class AttachmentStore {
                 body.put("quote_message", quoteText == null ? "" : quoteText);
             }
             String s = body.toString();
+            // Audio needs an explicit filename: without one the REST API names
+            // its temp file after the mime ("audio/mp4" -> .mp4) and signal-cli
+            // re-probes that extension as video/mp4, so official clients show
+            // an unplayable video bubble. The extension drives the probe.
+            String fnToken = "";
+            if (mime != null && mime.startsWith("audio/")) {
+                String ext = mime.equals("audio/aac") ? "aac"
+                        : mime.equals("audio/mpeg") ? "mp3"
+                        : mime.equals("audio/ogg") ? "ogg" : "m4a";
+                fnToken = ";filename=audio." + ext;
+            }
             // open the base64_attachments array and the data-URI string, leaving
             // the closing quote/bracket/brace for the suffix
             prefixJson = s.substring(0, s.length() - 1)
-                    + ",\"base64_attachments\":[\"data:" + mime + ";base64,";
+                    + ",\"base64_attachments\":[\"data:" + mime + fnToken + ";base64,";
         } catch (Exception e) {
             throw new IOException("body build failed", e);
         }
