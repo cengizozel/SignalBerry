@@ -14,6 +14,20 @@ android {
         versionName = "1.0"
     }
 
+    // Release signing uses a keystore that lives OUTSIDE the repo; builds
+    // without it (anyone cloning this) still work, just unsigned.
+    val releaseKeystore = file(System.getProperty("user.home") + "/Android/keystores/signalberry.jks")
+    signingConfigs {
+        if (releaseKeystore.exists()) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = findProperty("SIGNALBERRY_STORE_PASSWORD") as String? ?: ""
+                keyAlias = "signalberry"
+                keyPassword = findProperty("SIGNALBERRY_KEY_PASSWORD") as String? ?: ""
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -21,6 +35,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (releaseKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     compileOptions {

@@ -48,15 +48,14 @@ Instant exists either way.
 
 ## How it works
 
-There are three pieces, all of which you run.
+There are two things you set up.
 
-1. **signal-cli-rest-api** (Docker, port 5000). This is the actual Signal client,
-   registered as a linked device on your account. It exposes a REST API for
-   sending and a WebSocket (`/v1/receive`) for incoming messages.
-2. **SignalBerry Bridge** (Docker, port 9099). A small Python service that listens
-   to the same WebSocket, writes every message into SQLite, and serves a
-   monotonic change feed. See the [bridge repo](https://github.com/cengizozel/SignalBerryBridge).
-3. **SignalBerry** (the Android app). It holds one WebSocket to signal-cli for
+1. **The server**, from the [bridge repo](https://github.com/cengizozel/SignalBerryBridge).
+   One `docker compose up` starts everything it needs: signal-cli-rest-api (the
+   actual Signal client, registered as a linked device on your account, port 5000)
+   and the SignalBerry Bridge (a small Python service that writes every incoming
+   message into SQLite and serves a monotonic change feed, port 9099).
+2. **SignalBerry** (the Android app). It holds one WebSocket to signal-cli for
    realtime receive, sends over the REST API, and reports its own sends back to
    the bridge so both sides agree on history.
 
@@ -133,8 +132,9 @@ Confirm it linked:
 curl http://YOUR_HOST:5000/v1/accounts
 ```
 
-**3. Connect the app.** Install the APK, open SignalBerry, and fill in the connect
-screen. What you enter depends on whether your phone is on the same network as the
+**3. Connect the app.** Install the APK (grab it from
+[Releases](https://github.com/cengizozel/SignalBerry/releases)), open SignalBerry,
+and fill in the connect screen. What you enter depends on whether your phone is on the same network as the
 server or reaching it over the internet.
 
 On your home network, point the app straight at the services:
@@ -186,9 +186,6 @@ for the full picture. In short:
   with old ciphers, which modern servers reject. The app bundles
   [Conscrypt](https://github.com/google/conscrypt) and installs it at startup, so
   it speaks TLS 1.3 with current certificates, verified on a real Q10.
-- **No secrets in the repo.** Tokens and credentials live only in your server's
-  `.env` and the app's local preferences, never in source. The repo is public and
-  carries none of them.
 - **On device hygiene.** Read receipts are off by default. `adb backup` is
   disabled so the message database cannot be pulled off the device that way.
   Logging out wipes the local database, attachments, caches, and keys.
