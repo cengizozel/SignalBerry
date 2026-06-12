@@ -20,20 +20,20 @@
             android:paddingBottom="12dp" />
 
         <EditText
-            android:id="@+id/input_ip"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="signal-cli URL (IP:port or https)"
-            android:inputType="textNoSuggestions"
-            android:singleLine="true"
-            android:padding="8dp" />
-
-        <EditText
             android:id="@+id/input_number"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="Your Signal number"
             android:inputType="phone"
+            android:singleLine="true"
+            android:padding="8dp" />
+
+        <EditText
+            android:id="@+id/input_ip"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="signal-cli URL"
+            android:inputType="textNoSuggestions"
             android:singleLine="true"
             android:padding="8dp"
             android:layout_marginTop="10dp" />
@@ -42,7 +42,7 @@
             android:id="@+id/input_bridge_url"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Bridge URL (IP:port or https)"
+            android:hint="Bridge URL"
             android:inputType="textNoSuggestions"
             android:singleLine="true"
             android:padding="8dp"
