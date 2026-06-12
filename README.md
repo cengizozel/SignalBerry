@@ -1,6 +1,7 @@
 # SignalBerry
 
-A Signal messenger client for BlackBerry Android devices.
+A native Signal messenger client for BlackBerry 10 devices, built to be fast and
+light on hardware from 2013.
 
 <p align="center">
   <img src="screenshots/bb-ml.jpg" width="45%" alt="Message list (light mode)"/>
@@ -8,102 +9,230 @@ A Signal messenger client for BlackBerry Android devices.
   <img src="screenshots/bb-chat.jpg" width="45%" alt="Chat (dark mode)"/>
 </p>
 
-Built on top of [signal-cli](https://github.com/AsamK/signal-cli) via the [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) Docker image, with a companion [SignalBerry Bridge](https://github.com/cengizozel/SignalBerryBridge) for offline message persistence.
+SignalBerry runs inside the BlackBerry 10 Android runtime (Android 4.3 / API 18).
+It speaks to your own [signal-cli](https://github.com/AsamK/signal-cli) instance
+through the [signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api)
+Docker image, with a small companion [SignalBerry Bridge](https://github.com/cengizozel/SignalBerryBridge)
+that persists history and serves a catch-up feed. You host both yourself, so your
+messages stay on your hardware and your server.
 
-## Architecture
+## Why this exists
 
-```
-Signal Network
-     │
-     ▼
-signal-cli-rest-api  (Docker, port 5000)
-     │  WebSocket /v1/receive
-     ▼
-SignalBerry Bridge   (Docker, port 9099)
-     │  SQLite + mod_seq change feed (/v2/changes)
-     ▼
-SignalBerry Android  (single WebSocket + change-feed catch-up)
-```
+I care about BlackBerry because I care about digital minimalism. I like physical
+keyboards, I like a phone that does not pull me into infinite scrolling, and I
+like that these devices come from a time when designs were not all the same slab.
+There is also real satisfaction in seeing how much life is left in an old device,
+and in being part of the small community that keeps these phones useful.
 
-The app holds one WebSocket to signal-cli-rest-api for real-time receive and
-sends over its REST API. The bridge persists every message — with reactions,
-edits, deletes, quotes and receipt statuses — and serves a monotonic change
-feed, so anything that happened while the app was closed (including reactions
-to old messages and read receipts) is replayed exactly once on reconnect. The
-app reports its own sends to the bridge, giving both sides a complete history.
+The catch is that the modern Signal app does not run on BlackBerry 10, and Signal
+has no third party client story. SignalBerry is my attempt to have a proper Signal
+client on the device I actually want to carry.
+
+## How it compares to Instant
+
+The only other practical way to use Signal on a BlackBerry today is
+[Instant](https://instant.waitberry.com), a Matrix client. It is a genuinely
+impressive piece of work, more than a year of effort, fully featured, and I
+respect it a lot. It reaches Signal through a Matrix to Signal bridge, which means
+your messages travel through a Matrix homeserver and a bridge before they reach
+you, and some of that lives on infrastructure you may not run yourself. It is also
+closed source. In daily use it is heavy: it lags, and opening a conversation can
+take a while.
+
+SignalBerry takes a narrower path. It talks to Signal through signal-cli on a
+server you control, with fewer hops and no Matrix layer in between. It is open
+source, so you can read exactly what it does, and it is built to open a chat
+instantly rather than after a spinner. The trade is that SignalBerry only does
+Signal, where Instant bridges many networks. Different goals, and I am grateful
+Instant exists either way.
+
+## How it works
+
+There are three pieces, all of which you run.
+
+1. **signal-cli-rest-api** (Docker, port 5000). This is the actual Signal client,
+   registered as a linked device on your account. It exposes a REST API for
+   sending and a WebSocket (`/v1/receive`) for incoming messages.
+2. **SignalBerry Bridge** (Docker, port 9099). A small Python service that listens
+   to the same WebSocket, writes every message into SQLite, and serves a
+   monotonic change feed. See the [bridge repo](https://github.com/cengizozel/SignalBerryBridge).
+3. **SignalBerry** (the Android app). It holds one WebSocket to signal-cli for
+   realtime receive, sends over the REST API, and reports its own sends back to
+   the bridge so both sides agree on history.
+
+The bridge is what makes the app feel instant. signal-cli does not store anything,
+so without the bridge a client that was offline would miss whatever happened while
+it was away. The bridge records everything, including reactions to old messages,
+edits, deletes, quotes, and receipt statuses, and tags each change with an
+ever increasing sequence number. On reconnect the app asks for everything after
+the last number it saw, and replays it exactly once. No polling, no full resync,
+no guessing.
+
+A deliberate quirk worth knowing: signal-cli does not echo a linked device's own
+sends back to that device. So the app tells the bridge about each message it
+sends, and the bridge folds those into the same history, which is why your sent
+messages and their delivery and read receipts line up correctly across restarts.
+
+For the deeper design rationale, see [docs/REDESIGN.md](docs/REDESIGN.md).
 
 ## Features
 
-- **Realtime messaging** — single WebSocket; change-feed catch-up replays anything missed offline, exactly once
-- **Message status** — … pending → ✓ sent → ✓✓ delivered → ✓✓ read (blue); failed sends offer tap-to-retry
-- **Replies, reactions, edits** — quote-reply, emoji reactions (add/remove), edit with history, all synced across devices
-- **Delete** — delete for everyone (with "Message deleted" placeholders), local delete, per-conversation wipe
-- **Disappearing messages** — expiry timers honored: messages are scrubbed after their timer runs out
-- **Media** — images (zoom / save / share), video (thumbnails, tap-to-download, in-app player), audio and files; uploads stream with constant memory
-- **Conversation list** — snippets, timestamps, unread badges, mute per chat
-- **Search** — conversations by name, plus full message-history search inside a chat with match navigation
-- **Unread handling** — jump-to-first-unread divider; badge clears only when you actually reach the bottom; jump-to-latest button with unseen counter
-- **Hardware keyboard** — Enter sends, Alt/Enter inserts a newline (BlackBerry-first)
-- **Notifications** — per-sender with counts, restart-on-boot, offline-gap catch-up notifications, mark-read on open
-- **Privacy** — read receipts off by default, `adb backup` disabled, logout wipes all local data
-- **Light / dark mode** — toggle in Settings
+- Realtime messaging over a single WebSocket, with change feed catch-up that
+  replays anything missed while offline, exactly once.
+- Message status, from pending to sent to delivered to read, with failed sends
+  offering tap to retry.
+- Replies, emoji reactions (add and remove), and edits with history, all synced.
+- Delete for everyone (leaving a "Message deleted" placeholder), local delete,
+  and per conversation wipe.
+- Disappearing messages: expiry timers are honored and messages are scrubbed
+  when their timer runs out.
+- Group chats: messages, media, replies, reactions, edits, delete for everyone,
+  per member sender names, group avatars, and typing a member mention.
+- Media: images with zoom, save, and share; video with thumbnails, tap to
+  download, and an in app player; voice notes with a real waveform, scrubbing,
+  and pitch preserving speed control; uploads stream with constant memory.
+- Voice messages: record, send, and play back inline.
+- Conversation list with snippets, smart timestamps, unread badges, mute per
+  chat, local rename, and a Note to Self thread with its own icon.
+- Search across conversations, and full message history search inside a chat
+  with match navigation.
+- Hardware keyboard friendly: Enter sends by default, and it is a setting you
+  can turn off for newline behaviour.
+- Notifications per sender with counts, restart on boot, offline gap catch up,
+  and mark as read on open.
+- Light and dark mode.
 
-## Setup
+## Setup (home network)
 
-You need two Docker containers running on a machine reachable from your Android device. The easiest way is to use the [SignalBerry Bridge](https://github.com/cengizozel/SignalBerryBridge) repo, which ships a `docker-compose.yml` that starts both.
+You need the two Docker containers running on a machine your phone can reach.
+The [bridge repo](https://github.com/cengizozel/SignalBerryBridge) ships a
+`docker-compose.yml` that starts both.
 
-### 1. Clone the bridge repo
+**1. Start the server.**
 
 ```bash
 git clone https://github.com/cengizozel/SignalBerryBridge
 cd SignalBerryBridge
-```
-
-### 2. Set your Signal number
-
-Create a `.env` file in the bridge directory:
-
-```
-SIGNAL_NUMBER=+12223334444
-```
-
-### 3. Start the stack
-
-```bash
+echo "SIGNAL_NUMBER=+12223334444" > .env
 docker compose up -d --build
 ```
 
-This starts:
-- `signal-api` — signal-cli-rest-api on port `5000`
-- `signal-bridge` — SignalBerry Bridge on port `9099`
+This brings up `signal-api` on port 5000 and `signal-bridge` on port 9099.
 
-### 4. Link your Signal account
-
-Open this URL in a browser on the Docker host:
+**2. Link your Signal account.** Open this on the Docker host and scan the QR
+from your phone under Signal, Settings, Linked Devices, the plus button:
 
 ```
 http://YOUR_HOST:5000/v1/qrcodelink?device_name=signal-api
 ```
 
-On your phone: **Signal → Settings → Linked Devices → "+" → scan the QR code.**
-
-Verify it worked:
+Confirm it linked:
 
 ```bash
 curl http://YOUR_HOST:5000/v1/accounts
 ```
 
-### 5. Connect the Android app
+**3. Connect the app.** Install the APK, open SignalBerry, and on the connect
+screen enter:
 
-1. Open SignalBerry on your device.
-2. Enter `YOUR_HOST:5000` as the **API Host** and your Signal number in E.164 format.
-3. Tap **Connect** — your contacts will load and you can start chatting.
+- **Your Signal number** in E.164 format, for example `+12223334444`.
+- **signal-cli URL**: `YOUR_HOST:5000`
+- **Bridge URL**: `YOUR_HOST:9099`
 
-## Notes
+Leave the bridge token unchecked for a trusted home network, then tap Connect.
 
-- The device running Docker and the Android device must be on the same network (or the Docker ports must be reachable).
-- No TLS or authentication — intended for local / trusted network use only.
-- A background service handles real-time delivery and notifications when the app is not in the foreground.
-- Groups, voice/video calls, and stickers are not supported (groups are planned).
-- "Delete for me" on your phone cannot propagate here: signal-cli (≤0.14.5) does not expose the deleteForMe sync message. "Delete for everyone" works.
-- The bridge retains its copy of expired disappearing messages server-side (app-side expiry is honored); bridge-side expiry is a planned follow-up.
+## Using it away from home
+
+The home setup above only works on your own WiFi. To use SignalBerry over the
+internet, you expose the two services through any transport you like (a Cloudflare
+Tunnel is the practical choice on BlackBerry, since the device cannot run a VPN),
+and you protect them with a shared token. The full walkthrough, including the
+token, the auth proxy, and an optional Cloudflare Access layer, is in the bridge
+repo at [docs/REMOTE_ACCESS.md](https://github.com/cengizozel/SignalBerryBridge/blob/main/docs/REMOTE_ACCESS.md).
+When you go remote you fill in the same connect screen with your public addresses
+and check the bridge token box.
+
+## Security and privacy
+
+The whole point of this app is to use Signal without handing your messages to a
+third party, so security gets real attention. See [docs/SECURITY.md](docs/SECURITY.md)
+for the full picture. In short:
+
+- **You host everything.** Your messages live on your signal-cli server and your
+  bridge. There is no SignalBerry account, no analytics, and no telemetry.
+- **Token authentication for remote use.** When the services are exposed to the
+  internet, every request must carry a shared bearer token. The bridge enforces
+  it in process, and a small bundled proxy enforces the same token in front of
+  signal-cli-rest-api, which has no auth of its own. Without the token, requests
+  are rejected before reaching your server.
+- **Modern TLS on a 2013 device.** The BlackBerry runtime only negotiates TLS 1.0
+  with old ciphers, which modern servers reject. The app bundles
+  [Conscrypt](https://github.com/google/conscrypt) and installs it at startup, so
+  it speaks TLS 1.3 with current certificates, verified on a real Q10.
+- **No secrets in the repo.** Tokens and credentials live only in your server's
+  `.env` and the app's local preferences, never in source. The repo is public and
+  carries none of them.
+- **On device hygiene.** Read receipts are off by default. `adb backup` is
+  disabled so the message database cannot be pulled off the device that way.
+  Logging out wipes the local database, attachments, caches, and keys.
+- **Transport agnostic.** The token protects the services no matter how you expose
+  them, so you are not locked into any one provider. Cloudflare Access is an
+  optional extra edge layer, not a requirement.
+
+A fair limitation to state plainly: the token is a shared secret embedded in the
+app, so this is single user security, not per device identity. That is the right
+fit for a phone you own. The data path on the device and to your own server is
+yours end to end.
+
+## Challenges worth documenting
+
+Targeting a 2013 device through a sandboxed Android runtime produced a few
+problems that shaped the code.
+
+- **The font draws very little.** The BlackBerry 10 font renders Unicode 6.0 era
+  emoji but not newer ones, and many plain symbols come out as blank boxes. UI
+  glyphs are therefore either picked from the set the device actually has (checked
+  against the device font) or drawn in code on a canvas, like the play and pause
+  controls and the Note to Self notepad icon.
+- **Old TLS.** Covered above. The fix was bundling Conscrypt rather than fighting
+  the platform stack.
+- **No VPN on the device.** The BlackBerry 10 Android runtime does not grant the
+  VPN capability, so Tailscale, WireGuard, and similar cannot run on the phone.
+  This is why an outbound tunnel from the server is the practical remote path.
+- **No MediaPlayer speed control before API 23.** Voice note playback with a
+  waveform and adjustable speed is a custom player built on MediaCodec and
+  AudioTrack, with a WSOLA time stretcher so faster playback keeps the original
+  pitch instead of sounding sped up.
+- **Media formats.** The Q10 decoder is limited, so video and some image and
+  audio formats may not play on device, with graceful fallbacks where possible.
+
+## Building
+
+Plain Java with AppCompat, no Compose and no Material library, so it stays light
+on the runtime. minSdk 18, target and compile SDK 36, built with the Gradle
+wrapper and the Android SDK.
+
+```bash
+./gradlew :app:assembleDebug      # builds app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:testDebugUnitTest  # runs the JVM unit tests
+```
+
+The pure logic that has historically caused subtle bugs has unit tests, covering
+peer key resolution, the timestamp ladder, and the voice note time stretcher.
+
+## Limitations
+
+- "Delete for me" on your phone cannot propagate here. signal-cli (up to 0.14.5)
+  does not expose the deleteForMe sync message at all, so there is nothing for the
+  app to act on. "Delete for everyone" works in every direction, including groups.
+- Voice and video calls are not supported.
+- Stickers are not rendered.
+- The bridge keeps its own copy of expired disappearing messages server side. The
+  app honors expiry on device; bridge side expiry is a planned follow up.
+
+## Credits
+
+Built on [signal-cli](https://github.com/AsamK/signal-cli) by AsamK and the
+[signal-cli-rest-api](https://github.com/bbernhard/signal-cli-rest-api) image by
+bbernhard. Conscrypt by Google. Thanks to the BlackBerry community for keeping
+these devices alive.
