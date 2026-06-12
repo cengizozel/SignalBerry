@@ -381,6 +381,12 @@ public class Chat extends AppCompatActivity {
             return true; // consume both DOWN and UP
         });
 
+        android.widget.TextView emojiBtn = findViewById(R.id.btn_emoji);
+        emojiBtn.setOnClickListener(v -> showEmojiPicker("Emoji", e -> {
+            int pos = Math.max(input.getSelectionStart(), 0);
+            input.getText().insert(pos, e);
+        }, false));
+
         ImageButton mic = findViewById(R.id.btn_mic);
         mic.setOnClickListener(v -> toggleRecording());
         mic.setOnLongClickListener(v -> {
@@ -1580,6 +1586,12 @@ public class Chat extends AppCompatActivity {
     }
 
     private void showEmojiPicker(String title, final EmojiSink sink) {
+        showEmojiPicker(title, sink, true);
+    }
+
+    /** closeOnPick=false keeps the grid open for composing several emoji;
+     *  the negative button then reads "Done" instead of "Cancel". */
+    private void showEmojiPicker(String title, final EmojiSink sink, final boolean closeOnPick) {
         final String[] all = EMOJI_SET.split("\\s+");
         android.widget.GridView grid = new android.widget.GridView(this);
         grid.setNumColumns(8);
@@ -1603,10 +1615,10 @@ public class Chat extends AppCompatActivity {
                 new androidx.appcompat.app.AlertDialog.Builder(this)
                         .setTitle(title)
                         .setView(grid)
-                        .setNegativeButton("Cancel", null)
+                        .setNegativeButton(closeOnPick ? "Cancel" : "Done", null)
                         .create();
         grid.setOnItemClickListener((parent, view, pos, id) -> {
-            d.dismiss();
+            if (closeOnPick) d.dismiss();
             sink.onPick(all[pos]);
         });
         d.show();

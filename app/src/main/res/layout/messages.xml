@@ -36,11 +36,11 @@
         <!-- Right: plus button (no action) -->
         <ImageButton
             android:id="@+id/toolbar_add"
-            android:layout_width="36dp"
-            android:layout_height="36dp"
+            android:layout_width="56dp"
+            android:layout_height="match_parent"
+            android:scaleType="center"
             android:layout_centerVertical="true"
             android:layout_alignParentEnd="true"
-            android:padding="6dp"
             android:src="@android:drawable/ic_menu_add"
             android:background="@android:color/transparent"
             android:contentDescription="New message" />
