@@ -60,7 +60,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="For use away from home WiFi. A bridge token is recommended: it keeps anyone else who finds your address from using your account."
+                android:text="For use away from home WiFi. A bridge token is strongly recommended: it stops anyone who finds your address from using your account. Once your server uses one, the app needs it here to connect."
                 android:textSize="12sp"
                 android:textColor="#999999"
                 android:paddingBottom="8dp" />
