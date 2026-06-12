@@ -106,6 +106,30 @@ final class Utils {
         return new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date(tsMillis));
     }
 
+    /** Mime from a filename/uri extension; null when unknown. */
+    static String guessMime(String name) {
+        if (name == null) return null;
+        int q = name.indexOf('?');
+        if (q >= 0) name = name.substring(0, q);
+        int dot = name.lastIndexOf('.');
+        if (dot < 0 || dot == name.length() - 1) return null;
+        String ext = name.substring(dot + 1).toLowerCase(Locale.US);
+        switch (ext) {
+            case "jpg": case "jpeg": return "image/jpeg";
+            case "png":  return "image/png";
+            case "gif":  return "image/gif";
+            case "webp": return "image/webp";
+            case "mp4":  return "video/mp4";
+            case "3gp":  return "video/3gpp";
+            case "mkv":  return "video/x-matroska";
+            case "m4a":  return "audio/mp4";
+            case "aac":  return "audio/aac";
+            case "mp3":  return "audio/mpeg";
+            case "ogg":  return "audio/ogg";
+            default:     return null;
+        }
+    }
+
     // ── Network / URL ─────────────────────────────────────────────────────────
 
     static String normalizeBase(String hostPort) {

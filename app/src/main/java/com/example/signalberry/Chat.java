@@ -389,18 +389,12 @@ public class Chat extends AppCompatActivity {
 
         ImageButton mic = findViewById(R.id.btn_mic);
         mic.setOnClickListener(v -> toggleRecording());
-        mic.setOnLongClickListener(v -> {
-            if (recorder != null) { stopRecording(false); return true; }
-            return false;
-        });
+        ImageButton cancelRec = findViewById(R.id.btn_cancel_record);
+        cancelRec.setOnClickListener(v -> stopRecording(false));
 
-        attach.setOnClickListener(v -> {
-            Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
-            pick.setType("*/*");
-            pick.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
-            pick.addCategory(Intent.CATEGORY_OPENABLE);
-            startActivityForResult(Intent.createChooser(pick, "Select photo or video"), 101);
-        });
+        // in-app picker: the stock 4.3/BB10 gallery can't multi-select
+        attach.setOnClickListener(v -> startActivityForResult(
+                new Intent(this, MediaPickerActivity.class), 101));
 
         send.setOnClickListener(v -> {
             String text = input.getText().toString().trim();
@@ -645,32 +639,70 @@ public class Chat extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != 101 || resultCode != RESULT_OK || data == null) return;
-        Uri uri = data.getData();
-        if (uri == null) return;
+        if (resultCode != RESULT_OK || data == null) return;
 
-        EditText input = findViewById(R.id.input_message);
-        final String caption = input.getText().toString().trim();
-        input.setText("");
+        if (requestCode == 101) { // picker → review screen
+            final java.util.ArrayList<Uri> uris = new java.util.ArrayList<>();
+            java.util.ArrayList<Uri> inApp =
+                    data.getParcelableArrayListExtra(MediaPickerActivity.EXTRA_RESULT_URIS);
+            if (inApp != null) uris.addAll(inApp);
+            android.content.ClipData clip = data.getClipData(); // system-picker multi
+            if (clip != null) {
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    Uri u = clip.getItemAt(i).getUri();
+                    if (u != null) uris.add(u);
+                }
+            } else if (uris.isEmpty() && data.getData() != null) {
+                uris.add(data.getData());
+            }
+            if (uris.isEmpty()) return;
+            Intent review = new Intent(this, MediaReviewActivity.class);
+            review.putParcelableArrayListExtra(MediaReviewActivity.EXTRA_URIS, uris);
+            startActivityForResult(review, 103);
+            return;
+        }
 
-        String mimeRaw = getContentResolver().getType(uri);
-        final String mime = (mimeRaw != null) ? mimeRaw : "application/octet-stream";
-        final String kind = Repo.kindFromMime(mime);
-        final String cap  = caption.isEmpty() ? null : caption;
-        final String recipient = sendRecipient;
+        if (requestCode == 103) { // review → send
+            java.util.ArrayList<Uri> uris =
+                    data.getParcelableArrayListExtra(MediaReviewActivity.EXTRA_OUT_URIS);
+            java.util.ArrayList<String> captions =
+                    data.getStringArrayListExtra(MediaReviewActivity.EXTRA_OUT_CAPTIONS);
+            if (uris == null || uris.isEmpty()) return;
+            sendAttachments(uris, captions);
+        }
+    }
 
+    private void sendAttachments(final java.util.List<Uri> uris,
+                                 final java.util.List<String> captions) {
         new Thread(() -> {
             // 1. copy into the store FIRST — content:// permissions die with the
             //    picker; the old code persisted the transient URI (blank-after-
             //    restart bug). Local key promoted to the real att_id if learned.
             final AttachmentStore store = AttachmentStore.get(this);
-            final String localKey = "local-" + System.currentTimeMillis();
-            java.io.File stored = store.importLocal(uri, localKey);
-            if (stored == null) {
-                runOnUiThread(() -> Toast.makeText(this, "Could not read file", Toast.LENGTH_SHORT).show());
-                return;
+            for (int i = 0; i < uris.size(); i++) {
+                Uri uri = uris.get(i);
+                String mimeRaw = getContentResolver().getType(uri);
+                if (mimeRaw == null) mimeRaw = Utils.guessMime(uri.toString());
+                String mime = (mimeRaw != null) ? mimeRaw : "application/octet-stream";
+                String kind = Repo.kindFromMime(mime);
+                String localKey = "local-" + System.currentTimeMillis() + "-" + i;
+                java.io.File stored = store.importLocal(uri, localKey);
+                // edited copies live in cacheDir — drop them once imported
+                if ("file".equals(uri.getScheme()) && uri.getPath() != null
+                        && uri.getPath().startsWith(getCacheDir().getAbsolutePath())) {
+                    //noinspection ResultOfMethodCallIgnored
+                    new java.io.File(uri.getPath()).delete();
+                }
+                if (stored == null) {
+                    runOnUiThread(() -> Toast.makeText(this,
+                            "Could not read file", Toast.LENGTH_SHORT).show());
+                    continue;
+                }
+                String cap = captions != null && i < captions.size() ? captions.get(i) : null;
+                if (cap != null && cap.isEmpty()) cap = null;
+                // sendStoredFile blocks, so the batch goes out sequentially
+                sendStoredFile(stored, mime, kind, cap);
             }
-            sendStoredFile(stored, mime, kind, cap);
         }).start();
     }
 
@@ -740,8 +772,9 @@ public class Chat extends AppCompatActivity {
             recorder.start();
             ImageButton mic = findViewById(R.id.btn_mic);
             mic.setColorFilter(0xFFD32F2F);
+            findViewById(R.id.btn_cancel_record).setVisibility(android.view.View.VISIBLE);
             EditText input = findViewById(R.id.input_message);
-            input.setHint("Recording… tap mic to send, hold to cancel");
+            input.setHint("Recording");
         } catch (Exception e) {
             cleanupRecorder();
             Toast.makeText(this, "Cannot record audio here", Toast.LENGTH_SHORT).show();
@@ -784,6 +817,8 @@ public class Chat extends AppCompatActivity {
         }
         ImageButton mic = findViewById(R.id.btn_mic);
         if (mic != null) mic.clearColorFilter();
+        android.view.View cancel = findViewById(R.id.btn_cancel_record);
+        if (cancel != null) cancel.setVisibility(android.view.View.GONE);
         EditText input = findViewById(R.id.input_message);
         if (input != null) input.setHint("Message");
     }

@@ -333,6 +333,15 @@
             android:padding="10dp"/>
 
         <ImageButton
+            android:id="@+id/btn_cancel_record"
+            android:layout_width="44dp" android:layout_height="match_parent"
+            android:scaleType="center"
+            android:background="@android:color/transparent"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:visibility="gone"
+            android:contentDescription="Cancel recording" />
+
+        <ImageButton
             android:id="@+id/btn_mic"
             android:layout_width="44dp" android:layout_height="match_parent"
             android:scaleType="center"

@@ -54,6 +54,15 @@
             android:exported="false"/>
 
         <activity
+            android:name=".MediaPickerActivity"
+            android:exported="false"/>
+
+        <activity
+            android:name=".MediaReviewActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"/>
+
+        <activity
             android:name=".PlayerActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar"
