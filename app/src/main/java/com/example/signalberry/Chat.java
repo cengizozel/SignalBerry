@@ -98,6 +98,7 @@ public class Chat extends AppCompatActivity {
             runOnUiThread(() -> { if (tvTyping != null) tvTyping.setVisibility(android.view.View.GONE); });
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private boolean enterStripGuard = false;
 
     // Scroll state: only auto-scroll when the user is already at the bottom
     private boolean atBottom = true;
@@ -191,7 +192,7 @@ public class Chat extends AppCompatActivity {
         sendRecipient = isGroup
                 ? "group." + android.util.Base64.encodeToString(
                         groupKey.substring("group:".length()).getBytes(), android.util.Base64.NO_WRAP)
-                : (sendRecipient);
+                : (notEmpty(peerNumber) ? peerNumber : peerUuid);
         openReadTs = prefs.getLong("read_ts_" + chatDbKey, 0);
         // self thread is "Note to Self"; a local alias overrides everything
         if (notEmpty(myNumber) && chatDbKey.equals(digits(myNumber))) peerName = "Note to Self";
@@ -370,10 +371,12 @@ public class Chat extends AppCompatActivity {
             }
             return false;
         });
-        // Q10 hardware keyboard: Enter sends, Alt/Shift+Enter inserts a newline
+        // "Enter sends" is a setting (default on). When on, Enter sends on both
+        // the hardware keyboard (here) and the soft keyboard (newline strip in
+        // afterTextChanged). When off, Enter inserts a newline.
         input.setOnKeyListener((v, keyCode, event) -> {
             if (keyCode != android.view.KeyEvent.KEYCODE_ENTER) return false;
-            if (event.isAltPressed() || event.isShiftPressed()) return false;
+            if (!prefs.getBoolean("enter_sends", true)) return false; // newline mode
             if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) send.performClick();
             return true; // consume both DOWN and UP
         });
@@ -421,6 +424,15 @@ public class Chat extends AppCompatActivity {
                 }
             }
             @Override public void afterTextChanged(android.text.Editable s) {
+                if (!enterStripGuard && prefs.getBoolean("enter_sends", true)
+                        && s.toString().indexOf('\n') >= 0) {
+                    enterStripGuard = true;
+                    String clean = s.toString().replace("\n", "");
+                    input.setText(clean);
+                    input.setSelection(input.length());
+                    enterStripGuard = false;
+                    if (notEmpty(clean.trim())) { send.performClick(); return; }
+                }
                 handler.removeCallbacks(typingStopRun);
                 if (s.length() > 0) {
                     if (!typingSent) {

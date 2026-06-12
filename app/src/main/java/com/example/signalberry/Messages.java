@@ -229,6 +229,8 @@ public class Messages extends AppCompatActivity {
 
         if (!prefs.contains("show_search_bar"))
             prefs.edit().putBoolean("show_search_bar", true).apply();
+        if (!prefs.contains("enter_sends"))
+            prefs.edit().putBoolean("enter_sends", true).apply();
         applySearchBarVisibility();
 
         // Pull-to-refresh
@@ -427,35 +429,8 @@ public class Messages extends AppCompatActivity {
                 rows.add(row);
             }
 
-            // groups are always listed, even before their first stored message —
-            // otherwise an empty group thread is unreachable from the UI
-            java.util.Set<String> seen = new java.util.HashSet<>();
-            for (Map<String, String> r : rows) {
-                String gk = r.get("group_key");
-                if (gk != null) seen.add(gk);
-            }
-            for (String prefKey : prefs.getAll().keySet()) {
-                if (!prefKey.startsWith("group_sendid_group:")) continue;
-                String gkey = prefKey.substring("group_sendid_".length());
-                if (seen.contains(gkey)) continue;
-                if (prefs.getBoolean("group_hidden_" + gkey, false)) continue;
-                Map<String, String> row = new HashMap<>();
-                String gname = prefs.getString("alias_" + gkey, "");
-                if (isEmpty(gname)) gname = prefs.getString("contact_name_" + gkey, "");
-                if (isEmpty(gname)) gname = "Unnamed group";
-                row.put("name", gname);
-                row.put("snippet", "");
-                row.put("time", "");
-                row.put("ts", "0");
-                row.put("number", "");
-                row.put("uuid", "");
-                row.put("unread", "0");
-                row.put("avatar_path", "");
-                row.put("is_group", "1");
-                row.put("group_key", gkey);
-                row.put("group_token", prefs.getString(prefKey, ""));
-                rows.add(row);
-            }
+            // groups appear only once they have a stored message (empty
+            // group threads stay hidden until there is something to show)
             runOnUiThread(() -> {
                 all.clear();
                 all.addAll(rows);
@@ -493,8 +468,10 @@ public class Messages extends AppCompatActivity {
 
         android.widget.LinearLayout row1 = gridRow();
         android.widget.LinearLayout row2 = gridRow();
+        android.widget.LinearLayout row3 = gridRow();
         root.addView(row1);
         root.addView(row2);
+        root.addView(row3);
 
         final AlertDialog dlg = new AlertDialog.Builder(this)
                 .setTitle("Settings")
@@ -518,6 +495,8 @@ public class Messages extends AppCompatActivity {
         addToggle(row2, "🔍", "Search bar", "show_search_bar", radius, primaryText, false,
                 this::applySearchBarVisibility);
         addToggle(row2, "🐞", "Debug log", "debug_log", radius, primaryText, false, this::updateDebugPanel);
+        // ⏎ U+23CE is a 6.0 symbol the BB10 font renders
+        addToggle(row3, "⏎", "Enter sends", "enter_sends", radius, primaryText, false, null);
 
         // collapsible extras — rarely-used toggles live here
         final android.widget.LinearLayout extra = new android.widget.LinearLayout(this);
