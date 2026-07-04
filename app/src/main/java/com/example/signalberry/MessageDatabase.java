@@ -33,7 +33,7 @@ import static com.example.signalberry.Utils.*;
 class MessageDatabase extends SQLiteOpenHelper {
 
     private static final String DB_NAME    = "signalberry.db";
-    private static final int    DB_VERSION = 8;
+    private static final int    DB_VERSION = 9;
     private static final String T          = "messages";
 
     // status values
@@ -94,6 +94,19 @@ class MessageDatabase extends SQLiteOpenHelper {
             db.execSQL("ALTER TABLE " + T + " ADD COLUMN expire_at INTEGER NOT NULL DEFAULT 0");
         }
         if (old < 8) db.execSQL("ALTER TABLE " + T + " ADD COLUMN author TEXT NOT NULL DEFAULT ''");
+        if (old < 9) migrateV9(db);
+    }
+
+    /** v8→v9: repair Signal "long message" overflow rows. These arrived as a
+     *  text/x-signal-plain attachment (rendered as a bogus file bubble with a
+     *  play overlay); the full body was stored inline as the caption. Convert
+     *  them back to plain text. OR IGNORE skips the rare row whose att_id=''
+     *  identity is already taken, and the follow-up DELETE drops that leftover. */
+    private static void migrateV9(SQLiteDatabase db) {
+        db.execSQL("UPDATE OR IGNORE " + T + " SET msg_type='text', "
+                + "text=COALESCE(caption,''), att_id='', mime='', caption=NULL "
+                + "WHERE mime='text/x-signal-plain'");
+        db.execSQL("DELETE FROM " + T + " WHERE mime='text/x-signal-plain'");
     }
 
     /** v5→v6: REDESIGN.md §3.6 steps 1-6 (step 7, the bridge reconcile, runs in

@@ -447,7 +447,20 @@ final class Repo {
             }
             text = sb.toString();
         }
-        JSONArray atts = msg.optJSONArray("attachments");
+        JSONArray attsRaw = msg.optJSONArray("attachments");
+        // Signal "long message" overflow rides along as a text/x-signal-plain
+        // attachment while the full body is already inline — it's not real
+        // media, so drop it and let the message render as plain text instead
+        // of a bogus file bubble with a play overlay.
+        JSONArray atts = new JSONArray();
+        if (attsRaw != null) {
+            for (int i = 0; i < attsRaw.length(); i++) {
+                JSONObject att = attsRaw.optJSONObject(i);
+                if (att == null || isEmpty(safeOptString(att, "id"))) continue;
+                if ("text/x-signal-plain".equals(safeOptString(att, "contentType"))) continue;
+                atts.put(att);
+            }
+        }
         JSONObject quote = msg.optJSONObject("quote");
         long quoteTs = quote != null ? quote.optLong("id", 0) : 0;
         String quoteText = quote != null ? safeOptString(quote, "text") : null;
