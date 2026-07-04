@@ -10,8 +10,8 @@ android {
         applicationId = "com.example.signalberry"
         minSdk = 18
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     // Release signing uses a keystore that lives OUTSIDE the repo; builds
