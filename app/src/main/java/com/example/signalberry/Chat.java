@@ -267,7 +267,6 @@ public class Chat extends AppCompatActivity {
                 return;
             }
             ArrayList<String> sources = new ArrayList<>();
-            ArrayList<Long> srcTs = new ArrayList<>();
             int viewerPos = 0;
             int imgIndex = 0;
             for (int i = 0; i < displayItems.size(); i++) {
@@ -278,19 +277,17 @@ public class Chat extends AppCompatActivity {
                     if (src != null) {
                         if (i == pos) viewerPos = imgIndex;
                         sources.add(src);
-                        srcTs.add(m.serverTs);
                         imgIndex++;
                     }
                 }
             }
             if (sources.isEmpty()) return;
-            long[] tsArr = new long[srcTs.size()];
-            for (int i = 0; i < tsArr.length; i++) tsArr[i] = srcTs.get(i);
+            // no timestamps → the viewer hides "View in chat": we're already in
+            // the chat here, so that jump only makes sense from the media tab
             android.content.Intent intent = new android.content.Intent(Chat.this, ImageViewerActivity.class);
             intent.putStringArrayListExtra(ImageViewerActivity.EXTRA_SOURCES, sources);
-            intent.putExtra(ImageViewerActivity.EXTRA_TIMESTAMPS, tsArr);
             intent.putExtra(ImageViewerActivity.EXTRA_POSITION, viewerPos);
-            startActivityForResult(intent, 105);
+            startActivity(intent);
         });
         recycler.setAdapter(chatAdapter);
 
@@ -701,7 +698,7 @@ public class Chat extends AppCompatActivity {
             return;
         }
 
-        if (requestCode == 104 || requestCode == 105) { // gallery / viewer → jump to message
+        if (requestCode == 104) { // gallery "View in chat" → jump to message
             long ts = data.getLongExtra(ImageViewerActivity.EXTRA_RESULT_TS, 0);
             // onResume() is about to schedule a reload that would snap to the
             // bottom over a direct jump — park the target and let reloadRun
