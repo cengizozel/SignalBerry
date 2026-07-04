@@ -120,6 +120,16 @@ public class MediaGalleryActivity extends AppCompatActivity {
         selectTab(0);
     }
 
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        // viewer's "View in chat": relay the jump timestamp down to Chat
+        if (requestCode == 71 && resultCode == RESULT_OK && data != null
+                && data.getLongExtra(ImageViewerActivity.EXTRA_RESULT_TS, 0) > 0) {
+            setResult(RESULT_OK, data);
+            finish();
+        }
+    }
+
     private boolean isVisualTab() { return activeTab == 0; }
 
     private void selectTab(int idx) {
@@ -195,6 +205,7 @@ public class MediaGalleryActivity extends AppCompatActivity {
     private void openItem(MessageItem m) {
         if ("image".equals(m.msgType)) {
             ArrayList<String> sources = new ArrayList<>();
+            List<Long> srcTs = new ArrayList<>();
             int pos = 0, idx = 0;
             for (Row r : rows) {
                 if (r.item == null || !"image".equals(r.item.msgType)) continue;
@@ -202,12 +213,16 @@ public class MediaGalleryActivity extends AppCompatActivity {
                         : baseSignal + "/v1/attachments/" + r.item.attachmentId;
                 if (r.item == m) pos = idx;
                 sources.add(src);
+                srcTs.add(r.item.serverTs);
                 idx++;
             }
+            long[] tsArr = new long[srcTs.size()];
+            for (int t = 0; t < tsArr.length; t++) tsArr[t] = srcTs.get(t);
             Intent i = new Intent(this, ImageViewerActivity.class);
             i.putStringArrayListExtra(ImageViewerActivity.EXTRA_SOURCES, sources);
+            i.putExtra(ImageViewerActivity.EXTRA_TIMESTAMPS, tsArr);
             i.putExtra(ImageViewerActivity.EXTRA_POSITION, pos);
-            startActivity(i);
+            startActivityForResult(i, 71);
             return;
         }
         // video / audio / file: ensure cached, then play or hand off

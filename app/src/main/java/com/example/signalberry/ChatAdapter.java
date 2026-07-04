@@ -33,6 +33,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     interface OnImageClickListener  { void onImageClick(int position); }
     interface OnLongPressListener   { void onLongPress(int position); }
     interface OnItemClickListener   { void onItemClick(int position); }
+    interface OnQuoteClickListener  { void onQuoteClick(int position); }
 
     private final List<MessageItem> data;
     private final String restBase;
@@ -40,10 +41,26 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     private OnImageClickListener imageClickListener;
     private OnLongPressListener longPressListener;
     private OnItemClickListener itemClickListener;
+    private OnQuoteClickListener quoteClickListener;
     private java.util.Set<Long> selectedTs = new java.util.HashSet<>();
     private long highlightTs = 0;
+    private String peerName;
 
     void setHighlightTs(long ts) { this.highlightTs = ts; }
+    void setPeerName(String n)   { this.peerName = n; }
+
+    /** Header line for a quote block: "You", the group member's name, or the peer. */
+    private String quoteName(MessageItem m) {
+        if ("me".equals(m.quoteAuthor)) return "You";
+        if (m.quoteTs > 0) {
+            for (MessageItem it : data) {
+                if (it.type != MessageItem.TYPE_DATE_HEADER && it.serverTs == m.quoteTs
+                        && it.authorName != null && !it.authorName.isEmpty())
+                    return it.authorName;
+            }
+        }
+        return peerName == null || peerName.isEmpty() ? "Them" : peerName;
+    }
 
     ChatAdapter(List<MessageItem> data, String restBase, Context ctx) {
         this.data = data;
@@ -54,6 +71,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     void setOnImageClickListener(OnImageClickListener l) { this.imageClickListener = l; }
     void setOnLongPressListener(OnLongPressListener l)   { this.longPressListener = l; }
     void setOnItemClickListener(OnItemClickListener l)   { this.itemClickListener = l; }
+    void setOnQuoteClickListener(OnQuoteClickListener l) { this.quoteClickListener = l; }
     void setSelectedTs(java.util.Set<Long> s)            { this.selectedTs = s; }
 
     @Override public int getItemViewType(int position) {
@@ -89,6 +107,8 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     @Override public void onBindViewHolder(@NonNull RecyclerView.ViewHolder h, int pos) {
         MessageItem m = data.get(pos);
         if (h instanceof DateHeaderVH) { ((DateHeaderVH) h).bind(m); return; }
+        // static VHs can't reach the adapter — resolve the quote header here
+        if (m.quoteText != null && !m.quoteText.isEmpty()) m.quoteAuthorName = quoteName(m);
         h.itemView.setOnClickListener(v -> {
             if (itemClickListener != null) itemClickListener.onItemClick(pos);
         });
@@ -96,6 +116,16 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             if (longPressListener != null) { longPressListener.onLongPress(pos); return true; }
             return false;
         });
+        View qb = h.itemView.findViewById(R.id.quoteBlock);
+        if (qb != null) {
+            qb.setOnClickListener(v -> {
+                int p = h.getAdapterPosition();
+                if (p != RecyclerView.NO_POSITION && quoteClickListener != null)
+                    quoteClickListener.onQuoteClick(p);
+            });
+            // a clickable quote swallows touches — keep long-press-for-menu alive
+            qb.setOnLongClickListener(v -> h.itemView.performLongClick());
+        }
         boolean selected = m.serverTs > 0 && selectedTs.contains(m.serverTs);
         boolean highlighted = highlightTs != 0 && m.serverTs == highlightTs;
         h.itemView.setBackgroundColor(selected ? 0x331976D2
@@ -137,7 +167,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             if (m.status == Chat.ST_REMOTE_DELETED) { bindDeleted(tvMessage, quoteBlock, tvReactions); return; }
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
             tvMessage.setTypeface(null, android.graphics.Typeface.NORMAL);
-            bindQuote(m, quoteBlock, quoteLine, tvQuote);
+            bindQuote(m, quoteBlock, quoteLine, tvQuote, tvMessage);
             bindReactions(m, tvReactions);
         }
     }
@@ -164,7 +194,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             tvMessage.setText(editedSpan(m.text == null ? "" : m.text, m.editHistory));
             tvMessage.setTypeface(null, android.graphics.Typeface.NORMAL);
             bindStatus(m, tvStatus);
-            bindQuote(m, quoteBlock, quoteLine, tvQuote);
+            bindQuote(m, quoteBlock, quoteLine, tvQuote, tvMessage);
             bindReactions(m, tvReactions);
         }
     }
@@ -406,6 +436,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         s.setSpan(new android.text.style.ForegroundColorSpan(0xFF9E9E9E),
                 0, s.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         tvMessage.setText(s);
+        tvMessage.setMinWidth(0); // recycled VH may carry a quote-driven min width
         quoteBlock.setVisibility(View.GONE);
         tvReactions.setVisibility(View.GONE);
     }
@@ -422,13 +453,39 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     }
 
     private static void bindQuote(MessageItem m, LinearLayout block, View line, TextView tv) {
+        bindQuote(m, block, line, tv, null);
+    }
+
+    /** widthTarget (the message TextView) gets a min-width so the bubble grows
+     *  to fit the quote — quoteBlock is match_parent, so without this the quote
+     *  is crushed to the reply text's width and ellipsizes after a few words. */
+    private static void bindQuote(MessageItem m, LinearLayout block, View line, TextView tv,
+                                  TextView widthTarget) {
         if (m.quoteText != null && !m.quoteText.isEmpty()) {
             block.setVisibility(View.VISIBLE);
             boolean quoteFromMe = "me".equals(m.quoteAuthor);
             line.setBackgroundColor(quoteFromMe ? 0xFF4CAF50 : Utils.ACCENT);
-            tv.setText((quoteFromMe ? "You: " : "") + m.quoteText);
+            String name = m.quoteAuthorName != null ? m.quoteAuthorName
+                    : (quoteFromMe ? "You" : "");
+            // line 1: bold author, lines 2-3: quoted content (XML caps at 3 + ellipsize)
+            android.text.SpannableString s =
+                    new android.text.SpannableString(name + "\n" + m.quoteText);
+            s.setSpan(new android.text.style.StyleSpan(android.graphics.Typeface.BOLD),
+                    0, name.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            tv.setText(s);
+            if (widthTarget != null) {
+                // line(3dp) + its margin(6dp) + block paddingEnd(6dp)
+                int chrome = dp(block, 15);
+                float content = tv.getPaint().measureText(m.quoteText);
+                // bold runs ~6% wider than the plain paint measures
+                float header = tv.getPaint().measureText(name) * 1.06f;
+                int want = (int) Math.max(content, header) + chrome;
+                int cap = (int) (block.getResources().getDisplayMetrics().widthPixels * 0.62f);
+                widthTarget.setMinWidth(Math.min(want, cap));
+            }
         } else {
             block.setVisibility(View.GONE);
+            if (widthTarget != null) widthTarget.setMinWidth(0);
         }
     }
 
@@ -492,6 +549,12 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         // re-decoded everything on every reopen
         private static final java.util.concurrent.ExecutorService exec =
                 java.util.concurrent.Executors.newFixedThreadPool(2);
+        // video thumbs may download the whole file first — keep them off the
+        // image threads so a slow video never blanks the visible photos
+        private static final java.util.concurrent.ExecutorService videoExec =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        /** Auto-download cap for thumbnail-only fetches. */
+        private static final long THUMB_FETCH_MAX = 16L * 1024 * 1024;
         private static LruCache<String, Bitmap> cache;
         private final Context ctx;
         private static final int MAX_DIM = 640; // bubble cap on a 720px screen
@@ -516,7 +579,7 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                 if (tag.equals(target.getTag())) target.setImageBitmap(cached);
                 return;
             }
-            exec.execute(() -> {
+            (tag.startsWith("vthumb") ? videoExec : exec).execute(() -> {
                 final Bitmap bmp = fetch(tag, baseSignal);
                 if (bmp != null) cache.put(tag, bmp);
                 target.post(() -> {
@@ -545,7 +608,14 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                     String attId = tag.substring(7);
                     if (attId.isEmpty()) return null;
                     AttachmentStore store = AttachmentStore.get(ctx);
-                    if (!store.has(attId)) return null;   // not downloaded: keep placeholder
+                    if (!store.has(attId)) {
+                        // received videos are never on disk until played, so
+                        // bubbles stayed a grey placeholder forever — fetch
+                        // small ones just for the thumbnail
+                        long size = store.remoteSize(baseSignal, attId);
+                        if (size <= 0 || size > THUMB_FETCH_MAX) return null;
+                        if (store.fetch(baseSignal, attId) == null) return null;
+                    }
                     return videoThumb(store.fileFor(attId), null, false);
                 }
                 if (tag.startsWith("att:")) {
@@ -632,6 +702,11 @@ class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
                         fis.close();
                     }
                     Bitmap frame = r.getFrameAtTime(-1);
+                    // some encoders defeat the representative-frame pick; a
+                    // sync frame ~1s in avoids both null and black lead-ins
+                    if (frame == null) frame = r.getFrameAtTime(1_000_000,
+                            android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                    if (frame == null) frame = r.getFrameAtTime();
                     if (frame == null) return null;
                     // full video frames would dominate the Q10's small bitmap cache
                     if (frame.getWidth() > MAX_DIM || frame.getHeight() > MAX_DIM) {

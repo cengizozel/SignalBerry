@@ -59,6 +59,9 @@ public class Chat extends AppCompatActivity {
     private final List<String[]> groupMembers = new ArrayList<>();
     private final List<String[]> pendingMentions = new ArrayList<>();
 
+    // Jump target parked across the resume-reload (gallery "View in chat")
+    private long pendingJumpTs = 0;
+
     // Reply state
     private MessageItem replyToItem = null;
     private long        replyToTs   = 0;
@@ -130,6 +133,11 @@ public class Chat extends AppCompatActivity {
                     advanceReadWatermark();
                     repo.queueReadReceipts(chatDbKey,
                             sendRecipient, rawItems);
+                    if (pendingJumpTs != 0) {
+                        long ts = pendingJumpTs;
+                        pendingJumpTs = 0;
+                        jumpToMessage(ts);
+                    }
                 });
             }).start();
         }
@@ -245,6 +253,7 @@ public class Chat extends AppCompatActivity {
             ((android.widget.TextView) findViewById(R.id.title_name)).setText(peerName);
         }
         chatAdapter = new ChatAdapter(displayItems, baseSignal, this);
+        chatAdapter.setPeerName(peerName);
         chatAdapter.setAudioUi(audioUi);
         RecyclerView.ItemAnimator anim = recycler.getItemAnimator();
         if (anim instanceof androidx.recyclerview.widget.SimpleItemAnimator)
@@ -258,6 +267,7 @@ public class Chat extends AppCompatActivity {
                 return;
             }
             ArrayList<String> sources = new ArrayList<>();
+            ArrayList<Long> srcTs = new ArrayList<>();
             int viewerPos = 0;
             int imgIndex = 0;
             for (int i = 0; i < displayItems.size(); i++) {
@@ -268,15 +278,19 @@ public class Chat extends AppCompatActivity {
                     if (src != null) {
                         if (i == pos) viewerPos = imgIndex;
                         sources.add(src);
+                        srcTs.add(m.serverTs);
                         imgIndex++;
                     }
                 }
             }
             if (sources.isEmpty()) return;
+            long[] tsArr = new long[srcTs.size()];
+            for (int i = 0; i < tsArr.length; i++) tsArr[i] = srcTs.get(i);
             android.content.Intent intent = new android.content.Intent(Chat.this, ImageViewerActivity.class);
             intent.putStringArrayListExtra(ImageViewerActivity.EXTRA_SOURCES, sources);
+            intent.putExtra(ImageViewerActivity.EXTRA_TIMESTAMPS, tsArr);
             intent.putExtra(ImageViewerActivity.EXTRA_POSITION, viewerPos);
-            startActivity(intent);
+            startActivityForResult(intent, 105);
         });
         recycler.setAdapter(chatAdapter);
 
@@ -345,6 +359,21 @@ public class Chat extends AppCompatActivity {
             }
             if (m.status == ST_FAILED && "me".equals(m.from)) { retryFailedSend(m); return; }
             if ("audio".equals(m.msgType)) handlePlayPause(m);
+        });
+        chatAdapter.setOnQuoteClickListener(pos -> {
+            if (pos < 0 || pos >= displayItems.size()) return;
+            MessageItem m = displayItems.get(pos);
+            if (selectionMode) { // quote taps must not hijack selection mode
+                chatAdapter.notifyDataSetChanged();
+                if (m.type != MessageItem.TYPE_DATE_HEADER && m.serverTs != 0) {
+                    if (selectedTs.contains(m.serverTs)) selectedTs.remove(m.serverTs);
+                    else selectedTs.add(m.serverTs);
+                    if (selectedTs.isEmpty()) exitSelectionMode();
+                    else updateSelectionBar();
+                }
+                return;
+            }
+            if (m.quoteTs > 0) jumpToMessage(m.quoteTs);
         });
 
         // Selection bar
@@ -669,6 +698,15 @@ public class Chat extends AppCompatActivity {
                     data.getStringArrayListExtra(MediaReviewActivity.EXTRA_OUT_CAPTIONS);
             if (uris == null || uris.isEmpty()) return;
             sendAttachments(uris, captions);
+            return;
+        }
+
+        if (requestCode == 104 || requestCode == 105) { // gallery / viewer → jump to message
+            long ts = data.getLongExtra(ImageViewerActivity.EXTRA_RESULT_TS, 0);
+            // onResume() is about to schedule a reload that would snap to the
+            // bottom over a direct jump — park the target and let reloadRun
+            // consume it after its rebuild
+            if (ts > 0) pendingJumpTs = ts;
         }
     }
 
@@ -952,7 +990,7 @@ public class Chat extends AppCompatActivity {
         Intent g = new Intent(Chat.this, MediaGalleryActivity.class);
         g.putExtra(MediaGalleryActivity.EXTRA_PEER_KEY, chatDbKey);
         g.putExtra(MediaGalleryActivity.EXTRA_PEER_NAME, peerName);
-        startActivity(g);
+        startActivityForResult(g, 104); // gallery can relay a "view in chat" jump
     }
 
     /** Fetch the group roster once; resolve each member to a display name. */
@@ -1386,6 +1424,56 @@ public class Chat extends AppCompatActivity {
         chatAdapter.setHighlightTs(m.serverTs);
         chatAdapter.notifyDataSetChanged();
         recycler.scrollToPosition(pos);
+    }
+
+    // -------------------- jump to message (quote taps, gallery) --------------------
+
+    private int findDisplayPos(long ts) {
+        for (int i = 0; i < displayItems.size(); i++) {
+            MessageItem m = displayItems.get(i);
+            if (m.type != MessageItem.TYPE_DATE_HEADER && m.serverTs == ts) return i;
+        }
+        return -1;
+    }
+
+    /** Scroll to the message with this timestamp and flash-highlight it. If it
+     *  isn't in the current 300-row page, reload the full thread first. */
+    void jumpToMessage(long ts) {
+        int pos = findDisplayPos(ts);
+        if (pos >= 0) { revealMessage(pos, ts); return; }
+        new Thread(() -> {
+            final List<MessageItem> full = repo.getThreadFull(chatDbKey);
+            resolveAuthors(full);
+            runOnUiThread(() -> {
+                rawItems.clear();
+                rawItems.addAll(full);
+                atBottom = false; // keep rebuildDisplay from snapping to the end
+                rebuildDisplay();
+                int p = findDisplayPos(ts);
+                if (p >= 0) revealMessage(p, ts);
+                else Toast.makeText(this, "Original message not found", Toast.LENGTH_SHORT).show();
+            });
+        }).start();
+    }
+
+    private void revealMessage(int pos, long ts) {
+        chatAdapter.setHighlightTs(ts);
+        chatAdapter.notifyDataSetChanged();
+        recycler.stopScroll();
+        LinearLayoutManager lm = (LinearLayoutManager) recycler.getLayoutManager();
+        int anchor = lm == null ? -1 : lm.findFirstVisibleItemPosition();
+        if (anchor >= 0 && Math.abs(pos - anchor) > 40) {
+            // far away: teleport near the target, smooth-scroll the last stretch
+            int near = pos > anchor ? pos - 12 : pos + 12;
+            recycler.scrollToPosition(Math.max(0, Math.min(near, displayItems.size() - 1)));
+            recycler.post(() -> recycler.smoothScrollToPosition(pos));
+        } else {
+            recycler.smoothScrollToPosition(pos);
+        }
+        handler.postDelayed(() -> {
+            chatAdapter.setHighlightTs(0);
+            chatAdapter.notifyDataSetChanged();
+        }, 1600);
     }
 
     private static String dayKey(long ts) {

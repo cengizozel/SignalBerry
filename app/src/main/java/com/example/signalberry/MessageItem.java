@@ -19,6 +19,7 @@ class MessageItem {
     long lastEditTs;    // timestamp of the most recent edit (chained); 0 if never edited
     String quoteText;   // non-null when this message is a reply to another
     String quoteAuthor; // "me" or "peer", non-null when quoteText != null
+    String quoteAuthorName; // display name for the quote header, resolved at bind time
     long quoteTs;       // server_ts of the quoted message; 0 if none
     java.util.Map<String, String> reactions; // authorKey → emoji, null if none
     String editHistory; // JSON array of previous texts (oldest first), null if never edited

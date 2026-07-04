@@ -37,12 +37,17 @@ import java.util.ArrayList;
  */
 public class ImageViewerActivity extends AppCompatActivity {
 
-    static final String EXTRA_SOURCES  = "sources";
-    static final String EXTRA_POSITION = "position";
+    static final String EXTRA_SOURCES    = "sources";
+    static final String EXTRA_POSITION   = "position";
+    /** Optional, parallel to sources: serverTs per image. Enables "View in chat". */
+    static final String EXTRA_TIMESTAMPS = "timestamps";
+    /** Result extra: timestamp of the message the user wants to see in context. */
+    static final String EXTRA_RESULT_TS  = "jump_ts";
 
     private static final int MAX_DIM = 2048;
 
     private ArrayList<String> sources;
+    private long[] timestamps;
     private ViewPager pager;
 
     @Override
@@ -50,8 +55,10 @@ public class ImageViewerActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
 
         sources = getIntent().getStringArrayListExtra(EXTRA_SOURCES);
+        timestamps = getIntent().getLongArrayExtra(EXTRA_TIMESTAMPS);
         int startPos = getIntent().getIntExtra(EXTRA_POSITION, 0);
         if (sources == null || sources.isEmpty()) { finish(); return; }
+        if (timestamps != null && timestamps.length != sources.size()) timestamps = null;
 
         android.widget.RelativeLayout root = new android.widget.RelativeLayout(this);
         root.setBackgroundColor(0xFF000000);
@@ -96,6 +103,16 @@ public class ImageViewerActivity extends AppCompatActivity {
         TextView share = actionButton("Share");
         actions.addView(save);
         actions.addView(share);
+        if (timestamps != null) {
+            TextView toChat = actionButton("View in chat");
+            actions.addView(toChat);
+            toChat.setOnClickListener(v -> {
+                long ts = timestamps[pager.getCurrentItem()];
+                if (ts <= 0) return;
+                setResult(RESULT_OK, new android.content.Intent().putExtra(EXTRA_RESULT_TS, ts));
+                finish();
+            });
+        }
         android.widget.RelativeLayout.LayoutParams actionsLp =
                 new android.widget.RelativeLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -220,10 +237,23 @@ public class ImageViewerActivity extends AppCompatActivity {
                 return decodeBounded(new java.io.FileInputStream(src),
                         new java.io.FileInputStream(src));
             }
-            // http(s): cache through a temp file so we can double-pass decode
+            // attachment URLs go through the shared disk cache: it sends the
+            // auth headers (Cloudflare Access rejects bare requests — the old
+            // "viewer is black for received photos" bug) and skips a second
+            // download over the radio when the bubble already cached the file
+            int at = src.indexOf("/v1/attachments/");
+            if (at > 0) {
+                File f = AttachmentStore.get(ctx).fetch(src.substring(0, at),
+                        Uri.decode(src.substring(at + "/v1/attachments/".length())));
+                if (f == null) return null;
+                return decodeBounded(new java.io.FileInputStream(f),
+                        new java.io.FileInputStream(f));
+            }
+            // other http(s): cache through a temp file so we can double-pass decode
             HttpURLConnection c = (HttpURLConnection) new URL(src).openConnection();
             c.setConnectTimeout(10000);
             c.setReadTimeout(30000);
+            Auth.apply(c);
             if (c.getResponseCode() != 200) { c.disconnect(); return null; }
             File tmp = File.createTempFile("viewer", null, ctx.getCacheDir());
             try (InputStream is = c.getInputStream();
@@ -248,8 +278,10 @@ public class ImageViewerActivity extends AppCompatActivity {
             o.inJustDecodeBounds = true;
             BitmapFactory.decodeStream(boundsIn, null, o);
             try { if (boundsIn != null) boundsIn.close(); } catch (Exception ignored) {}
+            // sample until the decode fits MAX_DIM — dividing by (sample * 2)
+            // let anything under 2*MAX_DIM through unsampled, past the GL cap
             int sample = 1;
-            while (o.outWidth / (sample * 2) >= MAX_DIM || o.outHeight / (sample * 2) >= MAX_DIM)
+            while (o.outWidth / sample > MAX_DIM || o.outHeight / sample > MAX_DIM)
                 sample *= 2;
             BitmapFactory.Options o2 = new BitmapFactory.Options();
             o2.inSampleSize = sample;
@@ -275,19 +307,38 @@ public class ImageViewerActivity extends AppCompatActivity {
 
         @Override
         public Object instantiateItem(ViewGroup container, int position) {
-            ZoomImageView iv = new ZoomImageView(ctx);
-            iv.setLayoutParams(new ViewGroup.LayoutParams(
+            android.widget.FrameLayout page = new android.widget.FrameLayout(ctx);
+            page.setLayoutParams(new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            iv.setBackgroundColor(0xFF000000);
-            container.addView(iv);
+            page.setBackgroundColor(0xFF000000);
+
+            ZoomImageView iv = new ZoomImageView(ctx);
+            page.addView(iv, new android.widget.FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+            TextView err = new TextView(ctx);
+            err.setText("Couldn't load image");
+            err.setTextColor(0xFFAAAAAA);
+            err.setTextSize(16);
+            err.setVisibility(View.GONE);
+            android.widget.FrameLayout.LayoutParams errLp =
+                    new android.widget.FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            errLp.gravity = android.view.Gravity.CENTER;
+            page.addView(err, errLp);
+
+            container.addView(page);
 
             final String src = sources.get(position);
             new Thread(() -> {
                 Bitmap bm = loadBounded(ctx, src);
-                iv.post(() -> { if (bm != null) iv.setImageBitmap(bm); });
+                iv.post(() -> {
+                    if (bm != null) iv.setImageBitmap(bm);
+                    else err.setVisibility(View.VISIBLE);
+                });
             }).start();
 
-            return iv;
+            return page;
         }
 
         @Override
