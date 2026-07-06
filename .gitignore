@@ -20,3 +20,7 @@ CLAUDE.md
 artifacts/
 CLAUDE.md
 docs/final-review-findings.json
+
+# Personal developer scratch space: contents ignored, the folder + README stay
+scratch/*
+!scratch/README.md
